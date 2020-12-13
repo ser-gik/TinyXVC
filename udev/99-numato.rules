@@ -1,0 +1,3 @@
+# Numato Lab Mimas Artix 7 FPGA Module
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", TAG+="uaccess", GROUP="plugdev"
+

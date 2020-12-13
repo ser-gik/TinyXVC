@@ -10,7 +10,7 @@ static const char * echo_name(void){
 }
 
 static const char * echo_help(void){
-    return "Simple loopback module that forwards TDI vector to TFO\n"
+    return "Simple loopback module that forwards TDI vector to TDO\n"
            "No real device is involved\n"
            "Parameters: none\n";
 }

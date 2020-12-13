@@ -12,8 +12,15 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <signal.h>
 
 #define MAX_VECTOR_BITS 4096
+
+static sig_atomic_t shouldTerminate = 0;
+
+static void sigint_handler(int signo) {
+    shouldTerminate = 1;
+}
 
 static const struct txvc_module* enumerate_modules(
         bool (*fn)(const struct txvc_module *m, void *extra), void *extra) {
@@ -85,6 +92,18 @@ static const struct txvc_module *activate_module(const char *argStr) {
     return m;
 }
 
+static void log_vector(const char* name, const uint8_t* data, size_t sz) {
+    struct str_buf buf;
+    str_buf_reset(&buf);
+    str_buf_append(&buf, "%s: ", name);
+    for (size_t i = 0; i < sz; i++) {
+        str_buf_append(&buf, "%s ", byte_to_bitstring(data[i]));
+        if (((i + 1) % 8) == 0 || (i + 1) == sz) {
+            INFO("%s\n", buf.str);
+            str_buf_reset(&buf);
+        }
+    }
+}
 
 static bool send_data(int s, const void* buf, size_t sz) {
     ssize_t sent = send(s, buf, sz, 0);
@@ -152,10 +171,13 @@ static bool cmd_shift(int s, const struct txvc_module *m) {
     if (!recv_data(s, tms, bytesPerVector) || !recv_data(s, tdi, bytesPerVector)) {
         return false;
     }
+    log_vector("TMS", tms, bytesPerVector);
+    log_vector("TDI", tdi, bytesPerVector);
     uint8_t tdo[MAX_VECTOR_BITS / 8 + 1];
     if (!m->shift_bits(numBits, tms, tdi, tdo)) {
         return false;
     }
+    log_vector("TDO", tdo, bytesPerVector);
     return send_data(s, tdo, bytesPerVector);
 }
 
@@ -172,7 +194,7 @@ static void run_xvc_connectin(int s, const struct txvc_module *m) {
 #undef CMD
     };
 
-    for (;;) {
+    while (!shouldTerminate) {
         char command[16] = { 0 };
         ssize_t read = recv(s, command, sizeof(command), MSG_PEEK);
         if (read == 0) {
@@ -234,9 +256,8 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
     }
 
     printf("Start listening for incoming connections at port %d...\n", port);
-    for (;;) {
-        socklen_t length;
-        length = sizeof(addr);
+    while (!shouldTerminate) {
+        socklen_t length = sizeof(addr);
         int s = accept(serverSocket, (struct sockaddr *) &addr, &length);
         if (s < 0) {
             ERROR("Failed to accept connection: %s\n", strerror(errno));
@@ -262,6 +283,12 @@ int main(int argc, char**argv) {
         enumerate_modules(module_usage, NULL);
         return 1;
     }
+
+    struct sigaction sa;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = sigint_handler;
+    sigaction(SIGINT, &sa, NULL);
 
     const struct txvc_module *m = activate_module(argv[1]);
     if (m) {
