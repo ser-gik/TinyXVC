@@ -7,55 +7,77 @@
 #include <unistd.h>
 
 #include <stdio.h>
+#include <string.h>
+
+#define MAX_VECTOR_BITS 1024 /* TODO FIFOs can fit more, should this be increased? */
 
 struct profile {
     const char* name;
     enum ftdi_interface channel;
     int vendorId;
     int productId;
-};
-
-struct tck_period {
-    int periodNs;
-    unsigned char dividerHigh;
-    unsigned char dividerLow;
+    uint8_t directionMask;
+    uint8_t idlePattern;
 };
 
 static struct {
     const struct profile *profile;
     struct ftdi_version_info info;
     struct ftdi_context ctx;
-    struct tck_period curTckPeriod;
 } gFtdi;
 
-__attribute__((used))
 static const struct profile gProfiles[] = {
     {
         .name = "mimas_a7",
         .channel = INTERFACE_B,
         .vendorId = 0x2a19,
         .productId = 0x1009,
+        /*
+         * BDBUS pin connections:
+         * 0 -> TCK buf
+         * 1 -> TDI buf
+         * 2 <- TDO buf
+         * 3 -> TMS buf
+         * 4 | Not Connected
+         * 5 | Not Connected
+         * 6 -> OE_BUF (enable buffer for JTAG pins)
+         * 7 -> PROGRAM_B (active high)
+         */
+        .directionMask = (1u << 0)
+                       | (1u << 1)
+                       | (1u << 3)
+                       | (1u << 6)
+                       | (1u << 7),
+        .idlePattern = (1u << 0)
+                     | (1u << 1)
+                     | (1u << 3)
+                     | (1u << 6)
+                     | (0u << 7),
+    },
+    {
+        .name = NULL,
     },
 };
 
-static int ft2232h_set_tck_period(int tckPeriodNs);
 
-static struct tck_period get_closest_tck_period(int periodNs) {
-    /*
-     * TCK frequency and divider value are related in the next way:
-     *
-     * TCK period = 12MHz / (( 1 +[ (0xValueH * 256) OR 0xValueL] ) * 2)
-     *
-     * Round-up divider to get nearest period that is not greater than requested.
-     */
-    int divider = ((6 * periodNs + 999) / 1000) - 1;
-    return (struct tck_period){
-        .periodNs = 1000 * (1 + divider) / 6,
-        .dividerHigh = divider / 256,
-        .dividerLow = divider % 256,
-    };
+static const struct profile* find_profile(const char* name) {
+    const struct profile* p = gProfiles;
+    while (p->name) {
+        if (strcmp(name, p->name) == 0) {
+            return p;
+        }
+        p++;
+    }
+    return NULL;
 }
 
+static void list_profiles(void) {
+    const struct profile* p = gProfiles;
+    while (p->name) {
+        printf("%s\n", p->name);
+        p++;
+    }
+}
 
 static const char * ft2232h_name(void){
     return "ft2232h";
@@ -67,86 +89,84 @@ static const char * ft2232h_help(void){
 }
 
 static bool ft2232h_activate(const char **argNames, const char **argValues){
-    gFtdi.info = ftdi_get_library_version();
-    printf("libftdi %s %s\n", gFtdi.info.version_str, gFtdi.info.snapshot_str);
-
-    int err = ftdi_init(&gFtdi.ctx);
-    if (err) {
-        ERROR("Can't init ftdi context: %d %s\n", err, ftdi_get_error_string(&gFtdi.ctx));
+    gFtdi.profile = NULL;
+    while (*argNames) {
+        if (strcmp("profile", *argNames) == 0) {
+            gFtdi.profile = find_profile(*argValues);
+        }
+        argNames++;
+        argValues++;
+    }
+    if (!gFtdi.profile) {
+        printf("Supported profiles:\n");
+        list_profiles();
         return false;
     }
-    err = ftdi_set_interface(&gFtdi.ctx, INTERFACE_A); /* TODO change to B */
-    if (err) {
-        ERROR("Can't select ftdi channel: %d %s\n", err, ftdi_get_error_string(&gFtdi.ctx));
-        goto bail_0;
-    }
-    err = ftdi_usb_open(&gFtdi.ctx, 0x2a19, 0x1009);
-    if (err) {
-        ERROR("Can't open device: %d %s\n", err, ftdi_get_error_string(&gFtdi.ctx));
-        goto bail_1;
-    }
-    err = ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_RESET);
-    if (err) {
-        ERROR("Can't reset device: %d %s\n", err, ftdi_get_error_string(&gFtdi.ctx));
-        goto bail_1;
-    }
-    err = ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_MPSSE);
-    if (err) {
-        ERROR("Can't switch device to MPSSE mode: %d %s\n", err, ftdi_get_error_string(&gFtdi.ctx));
-        goto bail_1;
-    }
 
-    gFtdi.curTckPeriod = (struct tck_period) { .periodNs = 0, .dividerLow = 0, .dividerHigh = 0, };
-    if (ft2232h_set_tck_period(100) == 0) {
-        goto bail_2;
-    }
+    gFtdi.info = ftdi_get_library_version();
+    printf("Using libftdi \"%s %s\"\n", gFtdi.info.version_str, gFtdi.info.snapshot_str);
 
-    unsigned char c = LOOPBACK_START;
-    if (ftdi_write_data(&gFtdi.ctx, &c, 1) != 1) {
-        ERROR("Can't enable loopback\n");
-    }
+#define REQUIRE_FTDI_SUCCESS_(ftdiCallExpr, cleanupLabel)                                          \
+    do {                                                                                           \
+        int err = (ftdiCallExpr);                                                                  \
+        if (err != 0) {                                                                            \
+            ERROR("Failed: %s: %d %s\n", #ftdiCallExpr, err, ftdi_get_error_string(&gFtdi.ctx));   \
+            goto cleanupLabel;                                                                     \
+        }                                                                                          \
+    } while (0)
 
+    REQUIRE_FTDI_SUCCESS_(ftdi_init(&gFtdi.ctx), bail_noop);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_interface(&gFtdi.ctx, gFtdi.profile->channel), bail_deinit);
+    REQUIRE_FTDI_SUCCESS_(
+        ftdi_usb_open(&gFtdi.ctx, gFtdi.profile->vendorId, gFtdi.profile->productId), bail_deinit);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&gFtdi.ctx, 16), bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&gFtdi.ctx, SIO_DISABLE_FLOW_CTRL), bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_baudrate(&gFtdi.ctx, 1000 * 1000 / 16), bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_RESET), bail_usb_close);
+    /*
+     * Write idle pattern in all-inputs mode to get correct
+     * pin levels once actual direction mask is  applied
+     */
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_SYNCBB), bail_reset_mode);
+    if (ftdi_write_data(&gFtdi.ctx, &gFtdi.profile->idlePattern, 1) != 1) {
+        ERROR("Can't apply idle pattern to channel pins: %s\n", ftdi_get_error_string(&gFtdi.ctx));
+        goto bail_reset_mode;
+    }
+    REQUIRE_FTDI_SUCCESS_(
+        ftdi_set_bitmode(&gFtdi.ctx, gFtdi.profile->directionMask, BITMODE_SYNCBB), bail_reset_mode);
+
+#undef  REQUIRE_FTDI_SUCCESS_
     return true;
 
-bail_2:
-    ftdi_disable_bitbang(&gFtdi.ctx);
-bail_1:
+bail_reset_mode:
+    ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_RESET);
+bail_usb_close:
     ftdi_usb_close(&gFtdi.ctx);
-bail_0:
+bail_deinit:
     ftdi_deinit(&gFtdi.ctx);
+bail_noop:
     return false;
 }
 
 static bool ft2232h_deactivate(void){
-
-    unsigned char c = LOOPBACK_END;
-    if (ftdi_write_data(&gFtdi.ctx, &c, 1) != 1) {
-        ERROR("Can't disable loopback\n");
-    }
-
-    ftdi_disable_bitbang(&gFtdi.ctx);
+    ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_RESET);
     ftdi_usb_close(&gFtdi.ctx);
     ftdi_deinit(&gFtdi.ctx);
     return true;
 }
 
 static int ft2232h_max_vector_bits(void){
-    return 1024 * 8; /* TODO Datasheet says buffers are 4kB, should we increase this value ? */
+    return MAX_VECTOR_BITS;
 }
 
 static int ft2232h_set_tck_period(int tckPeriodNs){
-    struct tck_period newPeriod = get_closest_tck_period(tckPeriodNs);
-    if (newPeriod.periodNs != gFtdi.curTckPeriod.periodNs) {
-        unsigned char packet[] = { TCK_DIVISOR, newPeriod.dividerLow, newPeriod.dividerHigh };
-        int count = ftdi_write_data(&gFtdi.ctx, packet, sizeof(packet));
-        if (count != sizeof(packet)) {
-            ERROR("Can't set TCK divider [%x %x]: %d %s\n", newPeriod.dividerLow, newPeriod.dividerHigh,
-                    count, count >=0 ? "" : ftdi_get_error_string(&gFtdi.ctx));
-        } else {
-            gFtdi.curTckPeriod = newPeriod;
-        }
+    /* TODO revise this logic. TCK period is not the same as baud period */
+    int baudrate = (1000 * 1000 * 1000 / tckPeriodNs) / 16;
+    int err = ftdi_set_baudrate(&gFtdi.ctx, baudrate);
+    if (err) {
+        ERROR("Can't set TCK period %dns: %d %s\n", tckPeriodNs, err, ftdi_get_error_string(&gFtdi.ctx));
     }
-    return gFtdi.curTckPeriod.periodNs;
+    return err ? 0 : tckPeriodNs;
 }
 
 static bool ft2232h_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
