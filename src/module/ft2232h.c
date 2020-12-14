@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 struct profile {
     const char* name;
@@ -95,15 +96,24 @@ static void list_profiles(void) {
     }
 }
 
+static unsigned long long getTime(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec * 1000ull * 1000ull + ts.tv_nsec / 1000ull;
+}
+
 static bool do_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
-    const int maxVectorBits = 1024;
+    unsigned long long startTs = getTime();
+    const int maxVectorBits = 2048;
     if (numBits > maxVectorBits) {
         ERROR("Too many bits to transfer: %d (max. supported: %d)\n", numBits, maxVectorBits);
         return false;
     }
 
-    uint8_t sendBuf[maxVectorBits * 2 + 1];
+    uint8_t sendBuf[maxVectorBits * 2];
+    uint8_t recvBuf[maxVectorBits * 2];
+
     for (int i = 0; i < numBits; i++) {
         int byteIdx = i / 8;
         int bitIdx = i % 8;
@@ -112,18 +122,15 @@ static bool do_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *
         sendBuf[i * 2 + 0] = gFtdi.profile->assemblePattern(0, tdi, tms);
         sendBuf[i * 2 + 1] = gFtdi.profile->assemblePattern(1, tdi, tms);
     }
-    sendBuf[numBits * 2] = gFtdi.profile->assemblePattern(1, 1, 1);
 
-    int res = ftdi_write_data(&gFtdi.ctx, sendBuf, numBits * 2 + 1);
-    if (res != numBits * 2 + 1) {
-        ERROR("Failed to sent %d bits: %d %s\n", numBits, res, ftdi_get_error_string(&gFtdi.ctx));
-        return false;
-    }
+    struct ftdi_transfer_control* rdCtrl =
+        ftdi_read_data_submit(&gFtdi.ctx, recvBuf, numBits * 2);
+    struct ftdi_transfer_control* wrCtrl =
+        ftdi_write_data_submit(&gFtdi.ctx, sendBuf, numBits * 2);
 
-    uint8_t recvBuf[maxVectorBits * 2 + 1];
-    res = ftdi_read_data(&gFtdi.ctx, recvBuf, numBits * 2 + 1);
-    if (res != numBits * 2 + 1) {
-        ERROR("Failed to read %d bits: %d %s\n", numBits, res, ftdi_get_error_string(&gFtdi.ctx));
+    if (ftdi_transfer_data_done(wrCtrl) != numBits * 2
+            || ftdi_transfer_data_done(rdCtrl) != numBits * 2) {
+        ERROR("Failed to shift %d bits: %s\n", numBits, ftdi_get_error_string(&gFtdi.ctx));
         return false;
     }
 
@@ -131,13 +138,14 @@ static bool do_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *
         int byteIdx = i / 8;
         int bitIdx = i % 8;
 
-        bool tdo = gFtdi.profile->extractTDO(recvBuf[1 + i * 2]);
+        bool tdo = gFtdi.profile->extractTDO(recvBuf[i * 2 + 1]);
         if (tdo) {
             tdoVector[byteIdx] |= 1u << bitIdx;
         } else {
             tdoVector[byteIdx] &= ~(1u << bitIdx);
         }
     }
+    INFO("Shifted %d bits in %lluus\n", numBits, getTime() - startTs);
 
     return true;
 }
@@ -173,7 +181,7 @@ static bool ft2232h_activate(const char **argNames, const char **argValues){
     REQUIRE_FTDI_SUCCESS_(ftdi_set_interface(&gFtdi.ctx, gFtdi.profile->channel), bail_deinit);
     REQUIRE_FTDI_SUCCESS_(
         ftdi_usb_open(&gFtdi.ctx, gFtdi.profile->vendorId, gFtdi.profile->productId), bail_deinit);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&gFtdi.ctx, 16), bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&gFtdi.ctx, 1), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&gFtdi.ctx, SIO_DISABLE_FLOW_CTRL), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_baudrate(&gFtdi.ctx, 1000 * 1000 / 16), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_RESET), bail_usb_close);
@@ -227,7 +235,7 @@ static int ft2232h_set_tck_period(int tckPeriodNs){
 
 static bool ft2232h_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
-    const int bytesPerRound = 128;
+    const int bytesPerRound = 256;
     const int bitsPerRound = bytesPerRound * 8;
 
     while (numBits > 0) {
