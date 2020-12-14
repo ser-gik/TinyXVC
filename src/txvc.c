@@ -14,7 +14,7 @@
 #include <string.h>
 #include <signal.h>
 
-#define MAX_VECTOR_BITS 4096
+#define MAX_VECTOR_BITS (32 * 1024)
 
 static sig_atomic_t shouldTerminate = 0;
 
@@ -93,6 +93,7 @@ static const struct txvc_module *activate_module(const char *argStr) {
 }
 
 static void log_vector(const char* name, const uint8_t* data, size_t sz) {
+    return;
     struct str_buf buf;
     str_buf_reset(&buf);
     str_buf_append(&buf, "%s: ", name);
@@ -101,6 +102,7 @@ static void log_vector(const char* name, const uint8_t* data, size_t sz) {
         if (((i + 1) % 8) == 0 || (i + 1) == sz) {
             INFO("%s\n", buf.str);
             str_buf_reset(&buf);
+            str_buf_append(&buf, "%s: ", name);
         }
     }
 }
