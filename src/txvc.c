@@ -1,5 +1,6 @@
 
 #include "fixtures.h"
+#include "log.h"
 #include "module.h"
 
 #include <arpa/inet.h>
@@ -14,31 +15,15 @@
 #include <string.h>
 #include <signal.h>
 
+TXVC_DEFAULT_LOG_TAG(txvc);
+
 #define MAX_VECTOR_BITS (32 * 1024)
 
 static sig_atomic_t shouldTerminate = 0;
 
 static void sigint_handler(int signo) {
+    TXVC_UNUSED(signo);
     shouldTerminate = 1;
-}
-
-static const struct txvc_module* enumerate_modules(
-        bool (*fn)(const struct txvc_module *m, void *extra), void *extra) {
-    /* These symbols are defined in txvc.ld */
-    extern const struct txvc_module __txvc_modules_begin[];
-    extern const struct txvc_module __txvc_modules_end[];
-
-    for (const struct txvc_module* m = __txvc_modules_begin; m != __txvc_modules_end; m++) {
-        if(!fn(m, extra)) {
-            return m;
-        }
-    }
-    return NULL;
-}
-
-static bool module_usage(const struct txvc_module *m, void *extra) {
-    printf("\"%s\":\n%s\n", m->name(), m->help());
-    return true;
 }
 
 static bool find_by_name(const struct txvc_module *m, void *extra) {
@@ -63,7 +48,7 @@ static const struct txvc_module *activate_module(const char *argStr) {
     char* cur = strchr(args, ':');
     if (cur) {
         *cur++ = '\0';
-        for (int i = 0; i < sizeof(argNames) / sizeof(argNames[0]) && cur && *cur; i++) {
+        for (size_t i = 0; i < sizeof(argNames) / sizeof(argNames[0]) && cur && *cur; i++) {
             char* tmp = cur;
             cur = strchr(cur, ',');
             if (cur) {
@@ -80,7 +65,7 @@ static const struct txvc_module *activate_module(const char *argStr) {
         }
     }
 
-    const struct txvc_module *m = enumerate_modules(find_by_name, (void *) name);
+    const struct txvc_module *m = txvc_enumerate_modules(find_by_name, (void *) name);
     if (m) {
         if (!m->activate(argNames, argValues)) {
             ERROR("Failed to activate module \"%s\"\n", name);
@@ -93,23 +78,28 @@ static const struct txvc_module *activate_module(const char *argStr) {
 }
 
 static void log_vector(const char* name, const uint8_t* data, size_t sz) {
-    return;
-    struct str_buf buf;
-    str_buf_reset(&buf);
-    str_buf_append(&buf, "%s: ", name);
-    for (size_t i = 0; i < sz; i++) {
-        str_buf_append(&buf, "%s ", byte_to_bitstring(data[i]));
-        if (((i + 1) % 8) == 0 || (i + 1) == sz) {
-            INFO("%s\n", buf.str);
-            str_buf_reset(&buf);
-            str_buf_append(&buf, "%s: ", name);
+    while (sz) {
+        size_t lineItems = sz > 8 ? 8 : sz;
+        VERBOSE("%s: %s %s %s %s %s %s %s %s\n", name,
+                lineItems > 0 ? byte_to_bitstring(data[0]) : "",
+                lineItems > 1 ? byte_to_bitstring(data[1]) : "",
+                lineItems > 2 ? byte_to_bitstring(data[2]) : "",
+                lineItems > 3 ? byte_to_bitstring(data[3]) : "",
+                lineItems > 4 ? byte_to_bitstring(data[4]) : "",
+                lineItems > 5 ? byte_to_bitstring(data[5]) : "",
+                lineItems > 6 ? byte_to_bitstring(data[6]) : "",
+                lineItems > 7 ? byte_to_bitstring(data[7]) : "");
+        sz -= lineItems;
+        if (sz) {
+            data += lineItems;
         }
     }
 }
 
 static bool send_data(int s, const void* buf, size_t sz) {
-    ssize_t sent = send(s, buf, sz, 0);
-    if (sent < 0) {
+    ssize_t res = send(s, buf, sz, 0);
+    size_t sent = res > 0 ? res : 0;
+    if (res < 0) {
         ERROR("Can not send %zu bytes: %s\n", sz, strerror(errno));
     } else if (sent < sz) {
         ERROR("Can not send %zu bytes in full\n", sz);
@@ -118,8 +108,9 @@ static bool send_data(int s, const void* buf, size_t sz) {
 }
 
 static bool recv_data(int s, void* buf, size_t sz) {
-    ssize_t read = recv(s, buf, sz, MSG_WAITALL);
-    if (read < 0) {
+    ssize_t res = recv(s, buf, sz, MSG_WAITALL);
+    size_t read = res > 0 ? res : 0;
+    if (res < 0) {
         ERROR("Can not receive %zu bytes: %s\n", sz, strerror(errno));
     } else if (read < sz) {
         ERROR("Can not receive %zu bytes in full\n", sz);
@@ -140,7 +131,7 @@ static bool cmd_getinfo(int s, const struct txvc_module *m) {
     if (maxVectorBits > MAX_VECTOR_BITS) {
         maxVectorBits = MAX_VECTOR_BITS;
     }
-    INFO("%s: responding with vector size %d\n", __func__, maxVectorBits);
+    VERBOSE("%s: responding with vector size %d\n", __func__, maxVectorBits);
     char response[64];
     int len = snprintf(response, sizeof(response), "xvcServer_v1.0:%d\n", maxVectorBits);
     return send_data(s, response, len);
@@ -152,7 +143,7 @@ static bool cmd_settck(int s, const struct txvc_module *m) {
         return false;
     }
     int tckPeriod = m->set_tck_period(suggestedTckPeriod);
-    INFO("%s: suggested TCK period: %dns, actual: %dns\n", __func__, suggestedTckPeriod, tckPeriod);
+    VERBOSE("%s: suggested TCK period: %dns, actual: %dns\n", __func__, suggestedTckPeriod, tckPeriod);
     uint8_t response[4] = { tckPeriod >> 0, tckPeriod >> 8, tckPeriod >> 16, tckPeriod >> 24 };
     return send_data(s, response, 4);
 }
@@ -166,7 +157,7 @@ static bool cmd_shift(int s, const struct txvc_module *m) {
         ERROR("Requested too big vector size: %d (max: %d)\n", numBits, MAX_VECTOR_BITS);
         return false;
     }
-    INFO("%s: shifting %d bits\n", __func__, numBits);
+    VERBOSE("%s: shifting %d bits\n", __func__, numBits);
     int bytesPerVector = numBits / 8 + !!(numBits % 8);
     uint8_t tms[MAX_VECTOR_BITS / 8 + 1];
     uint8_t tdi[MAX_VECTOR_BITS / 8 + 1];
@@ -198,23 +189,25 @@ static void run_xvc_connectin(int s, const struct txvc_module *m) {
 
     while (!shouldTerminate) {
         char command[16] = { 0 };
-        ssize_t read = recv(s, command, sizeof(command), MSG_PEEK);
-        if (read == 0) {
-            printf("Connection was closed by peer\n");
+        ssize_t res = recv(s, command, sizeof(command), MSG_PEEK);
+        if (res == 0) {
+            INFO("Connection was closed by peer\n");
             return;
         }
-        if (read < 0) {
+        if (res < 0) {
             ERROR("Can not read from socket: %s\n", strerror(errno));
             return;
         }
+        size_t read = res;
 
         bool shouldContinue = false;
-        for (int i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
             size_t prefixSz = commands[i].prefixSz;
             if (read < prefixSz) {
                 shouldContinue = true;
             } else if (strncmp(commands[i].prefix, command, prefixSz) == 0) {
-                ssize_t read = recv(s, command, prefixSz, MSG_WAITALL);
+                ssize_t res = recv(s, command, prefixSz, MSG_WAITALL);
+                size_t read = res > 0 ? res : 0;
                 if (read != prefixSz) {
                     ERROR("Can not pop from socket queue\n");
                     return;
@@ -257,7 +250,7 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
         return;
     }
 
-    printf("Start listening for incoming connections at port %d...\n", port);
+    INFO("Start listening for incoming connections at port %d...\n", port);
     while (!shouldTerminate) {
         socklen_t length = sizeof(addr);
         int s = accept(serverSocket, (struct sockaddr *) &addr, &length);
@@ -266,10 +259,10 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
             continue;
         }
         if (addr.sin_family == AF_INET) {
-            printf("Accepted connection from %s:%d\n",
+            INFO("Accepted connection from %s:%d\n",
                     inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
         } else {
-            printf("Accepted connection from unknown address\n");
+            INFO("Accepted connection from unknown address\n");
         }
         run_xvc_connectin(s, m);
         shutdown(s, SHUT_RDWR);
@@ -277,12 +270,18 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
     }
 }
 
+static bool module_usage(const struct txvc_module *m, void *extra) {
+    TXVC_UNUSED(extra);
+    printf("\"%s\":\n%s\n", m->name(), m->help());
+    return true;
+}
+
 int main(int argc, char**argv) {
     if (argc != 2) {
         printf("Usage:\n\t%s <module name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...\n",
                 argv[0]);
         printf("Available modules:\n");
-        enumerate_modules(module_usage, NULL);
+        txvc_enumerate_modules(module_usage, NULL);
         return 1;
     }
 
@@ -296,7 +295,7 @@ int main(int argc, char**argv) {
     if (m) {
         run_server(2542, m);
         if (!m->deactivate()) {
-            ERROR("Failed to deactivate module \"%s\"\n", m->name());
+            WARN("Failed to deactivate module \"%s\"\n", m->name());
         }
     }
     return 0;

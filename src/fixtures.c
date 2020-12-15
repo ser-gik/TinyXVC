@@ -1,14 +1,6 @@
 
 #include "fixtures.h"
 
-#include <string.h>
-#include <stdarg.h>
-
-const char* txvc_filename(const char* pathname) {
-    const char* lastSlash = strrchr(pathname, '/');
-    return lastSlash ? lastSlash + 1 : pathname;
-}
-
 const char* byte_to_bitstring(unsigned char c) {
     static const char* table[256] = {
 #define STR(s)                      STR_(s)
@@ -41,22 +33,5 @@ const char* byte_to_bitstring(unsigned char c) {
 #undef ALL
     };
     return table[c];
-}
-
-void str_buf_append(struct str_buf* buf, const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    int res = vsnprintf(buf->cur__, buf->avail__, fmt,ap);
-    va_end(ap);
-    if (res < 0) {
-        return;
-    }
-    if (res > buf->avail__) {
-        buf->avail__ = 0;
-        buf->cur__ = buf->str + sizeof(buf->str);
-        return;
-    }
-    buf->avail__ -= res;
-    buf->cur__ += res;
 }
 

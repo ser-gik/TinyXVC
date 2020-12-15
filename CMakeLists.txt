@@ -13,6 +13,8 @@ include( ${LIBFTDI_USE_FILE} )
 add_executable(TinyXVC
     src/txvc.c
     src/fixtures.c
+    src/log.c
+    src/module.c
     src/module/echo.c
     src/module/ft2232h.c
     )
@@ -22,10 +24,10 @@ target_include_directories(TinyXVC
     PRIVATE include/
     )
 target_compile_options(TinyXVC
-    PRIVATE -Wall -Werror
+    PRIVATE -Wall -Wextra -Wpedantic -Werror
     )
 target_link_options(TinyXVC
-    PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/txvc.ld
+    PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/module.ld
     )
 target_link_libraries(TinyXVC
     ftdi1

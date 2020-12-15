@@ -2,8 +2,11 @@
 #include "module.h"
 
 #include "fixtures.h"
+#include "log.h"
 
 #include <string.h>
+
+TXVC_DEFAULT_LOG_TAG(echo);
 
 static const char * echo_name(void){
     return "echo";
@@ -38,6 +41,7 @@ static int echo_set_tck_period(int tckPeriodNs){
 
 static bool echo_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
+    TXVC_UNUSED(tmsVector);
     memcpy(tdoVector, tdiVector, numBits / 8 + !!(numBits % 8));
     return true;
 }
