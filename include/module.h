@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 struct txvc_module {
-    const char *(*name)(void);
-    const char *(*help)(void);
+    const char *name;
+    const char *help;
 
     bool (*activate)(const char **argNames, const char **argValues);
     bool (*deactivate)(void);

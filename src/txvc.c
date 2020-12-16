@@ -29,7 +29,7 @@ static void sigint_handler(int signo) {
 
 static bool find_by_name(const struct txvc_module *m, const void *extra) {
     const char* name = extra;
-    return strcmp(name, m->name()) != 0;
+    return strcmp(name, m->name) != 0;
 }
 
 static const struct txvc_module *activate_module(const char *argStr) {
@@ -279,7 +279,7 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
 
 static bool module_usage(const struct txvc_module *m, const void *extra) {
     TXVC_UNUSED(extra);
-    printf("\"%s\":\n%s\n", m->name(), m->help());
+    printf("\"%s\":\n%s\n", m->name, m->help);
     return true;
 }
 
@@ -309,7 +309,7 @@ int main(int argc, char**argv) {
     if (m) {
         run_server(2542, m);
         if (!m->deactivate()) {
-            WARN("Failed to deactivate module \"%s\"\n", m->name());
+            WARN("Failed to deactivate module \"%s\"\n", m->name);
         }
     }
     return 0;

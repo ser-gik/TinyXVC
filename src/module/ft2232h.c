@@ -148,16 +148,7 @@ static void list_profiles(void) {
     }
 }
 
-static const char * ft2232h_name(void){
-    return "ft2232h";
-}
-
-static const char * ft2232h_help(void){
-    return "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
-           "Parameters: profile=<name>\n";
-}
-
-static bool ft2232h_activate(const char **argNames, const char **argValues){
+static bool activate(const char **argNames, const char **argValues){
     gFtdi.profile = NULL;
     while (*argNames) {
         if (strcmp("profile", *argNames) == 0) {
@@ -210,18 +201,18 @@ bail_noop:
     return false;
 }
 
-static bool ft2232h_deactivate(void){
+static bool deactivate(void){
     ftdi_set_bitmode(&gFtdi.ctx, 0x00, BITMODE_RESET);
     ftdi_usb_close(&gFtdi.ctx);
     ftdi_deinit(&gFtdi.ctx);
     return true;
 }
 
-static int ft2232h_max_vector_bits(void){
+static int max_vector_bits(void){
     return MAX_VECTOR_BITS_PER_ROUND;
 }
 
-static int ft2232h_set_tck_period(int tckPeriodNs){
+static int set_tck_period(int tckPeriodNs){
     int baudrate = 2 * (1000 * 1000 * 1000 / tckPeriodNs) / 16;
     int err = ftdi_set_baudrate(&gFtdi.ctx, baudrate);
     if (err) {
@@ -230,7 +221,7 @@ static int ft2232h_set_tck_period(int tckPeriodNs){
     return err ? 0 : tckPeriodNs;
 }
 
-static bool ft2232h_shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
+static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
     for (; numBits > MAX_VECTOR_BITS_PER_ROUND;
                 numBits -= MAX_VECTOR_BITS_PER_ROUND,
@@ -245,12 +236,13 @@ static bool ft2232h_shift_bits(int numBits, const uint8_t *tmsVector, const uint
 }
 
 TXVC_MODULE(ft2232h) = {
-    .name = ft2232h_name,
-    .help = ft2232h_help,
-    .activate = ft2232h_activate,
-    .deactivate = ft2232h_deactivate,
-    .max_vector_bits = ft2232h_max_vector_bits,
-    .set_tck_period = ft2232h_set_tck_period,
-    .shift_bits = ft2232h_shift_bits,
+    .name = "ft2232h",
+    .help = "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
+            "Parameters: profile=<name>\n",
+    .activate = activate,
+    .deactivate = deactivate,
+    .max_vector_bits = max_vector_bits,
+    .set_tck_period = set_tck_period,
+    .shift_bits = shift_bits,
 };
 
