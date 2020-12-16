@@ -2,8 +2,9 @@
 #include "module.h"
 #include "log.h"
 
-#include <ftdi.h>
+#include <libftdi1/ftdi.h>
 
+#include <stdint.h>
 #include <unistd.h>
 
 #include <assert.h>
@@ -32,11 +33,12 @@ static struct {
 } gFtdi;
 
 static uint8_t mimasa7_assemblePattern(bool tck, bool tdi, bool tms) {
-    return  (tck << 0)
-          | (tdi << 1)
-          | (tms << 3)
+    return (uint8_t) (
+            ((unsigned) tck << 0)
+          | ((unsigned) tdi << 1)
+          | ((unsigned) tms << 3)
           | (0u << 6)  /* Always enable JTAG pin buffers  */
-          | (0u << 7); /* Newer assert PROG_B */
+          | (0u << 7)); /* Newer assert PROG_B */
 }
 
 static bool mimasa7_extractTDO(uint8_t pattern) {

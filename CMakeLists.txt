@@ -24,7 +24,7 @@ target_include_directories(TinyXVC
     PRIVATE include/
     )
 target_compile_options(TinyXVC
-    PRIVATE -Wall -Wextra -Wpedantic -Werror
+    PRIVATE -Weverything -Werror -Wno-padded
     )
 target_link_options(TinyXVC
     PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/module.ld

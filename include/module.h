@@ -27,5 +27,5 @@ struct txvc_module {
     __attribute__((section(".txvc_modules")))
 
 extern const struct txvc_module* txvc_enumerate_modules(
-        bool (*fn)(const struct txvc_module *m, void *extra), void *extra);
+        bool (*fn)(const struct txvc_module *m, const void *extra), const void *extra);
 

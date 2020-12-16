@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <signal.h>
+#include <stddef.h>
 
 TXVC_DEFAULT_LOG_TAG(txvc);
 
@@ -26,7 +27,7 @@ static void sigint_handler(int signo) {
     shouldTerminate = 1;
 }
 
-static bool find_by_name(const struct txvc_module *m, void *extra) {
+static bool find_by_name(const struct txvc_module *m, const void *extra) {
     const char* name = extra;
     return strcmp(name, m->name()) != 0;
 }
@@ -65,7 +66,7 @@ static const struct txvc_module *activate_module(const char *argStr) {
         }
     }
 
-    const struct txvc_module *m = txvc_enumerate_modules(find_by_name, (void *) name);
+    const struct txvc_module *m = txvc_enumerate_modules(find_by_name, name);
     if (m) {
         if (!m->activate(argNames, argValues)) {
             ERROR("Failed to activate module \"%s\"\n", name);
@@ -98,7 +99,7 @@ static void log_vector(const char* name, const uint8_t* data, size_t sz) {
 
 static bool send_data(int s, const void* buf, size_t sz) {
     ssize_t res = send(s, buf, sz, 0);
-    size_t sent = res > 0 ? res : 0;
+    size_t sent = res > 0 ? (size_t) res : 0;
     if (res < 0) {
         ERROR("Can not send %zu bytes: %s\n", sz, strerror(errno));
     } else if (sent < sz) {
@@ -109,7 +110,7 @@ static bool send_data(int s, const void* buf, size_t sz) {
 
 static bool recv_data(int s, void* buf, size_t sz) {
     ssize_t res = recv(s, buf, sz, MSG_WAITALL);
-    size_t read = res > 0 ? res : 0;
+    size_t read = res > 0 ? (size_t) res : 0;
     if (res < 0) {
         ERROR("Can not receive %zu bytes: %s\n", sz, strerror(errno));
     } else if (read < sz) {
@@ -134,7 +135,7 @@ static bool cmd_getinfo(int s, const struct txvc_module *m) {
     VERBOSE("%s: responding with vector size %d\n", __func__, maxVectorBits);
     char response[64];
     int len = snprintf(response, sizeof(response), "xvcServer_v1.0:%d\n", maxVectorBits);
-    return send_data(s, response, len);
+    return send_data(s, response, (size_t) len);
 }
 
 static bool cmd_settck(int s, const struct txvc_module *m) {
@@ -143,22 +144,28 @@ static bool cmd_settck(int s, const struct txvc_module *m) {
         return false;
     }
     int tckPeriod = m->set_tck_period(suggestedTckPeriod);
+    if (tckPeriod <= 0) {
+        ERROR("%s: bad period: %dns\n", __func__, tckPeriod);
+        return false;
+    }
     VERBOSE("%s: suggested TCK period: %dns, actual: %dns\n", __func__, suggestedTckPeriod, tckPeriod);
-    uint8_t response[4] = { tckPeriod >> 0, tckPeriod >> 8, tckPeriod >> 16, tckPeriod >> 24 };
+    uint8_t response[4] = {
+        (uint8_t) (tckPeriod >> 0),
+        (uint8_t) (tckPeriod >> 8),
+        (uint8_t) (tckPeriod >> 16),
+        (uint8_t) (tckPeriod >> 24)
+    };
     return send_data(s, response, 4);
 }
 
 static bool cmd_shift(int s, const struct txvc_module *m) {
     int numBits = recv_xvc_int(s);
-    if (numBits < 0) {
-        return false;
-    }
-    if (numBits > MAX_VECTOR_BITS) {
-        ERROR("Requested too big vector size: %d (max: %d)\n", numBits, MAX_VECTOR_BITS);
+    if (numBits < 0 || numBits > MAX_VECTOR_BITS) {
+        ERROR("Bad vector size: %d (max: %d)\n", numBits, MAX_VECTOR_BITS);
         return false;
     }
     VERBOSE("%s: shifting %d bits\n", __func__, numBits);
-    int bytesPerVector = numBits / 8 + !!(numBits % 8);
+    size_t bytesPerVector = (size_t) numBits / 8 + !!((size_t) numBits % 8);
     uint8_t tms[MAX_VECTOR_BITS / 8 + 1];
     uint8_t tdi[MAX_VECTOR_BITS / 8 + 1];
     if (!recv_data(s, tms, bytesPerVector) || !recv_data(s, tdi, bytesPerVector)) {
@@ -189,25 +196,25 @@ static void run_xvc_connectin(int s, const struct txvc_module *m) {
 
     while (!shouldTerminate) {
         char command[16] = { 0 };
-        ssize_t res = recv(s, command, sizeof(command), MSG_PEEK);
-        if (res == 0) {
+        ssize_t sockRes = recv(s, command, sizeof(command), MSG_PEEK);
+        if (sockRes == 0) {
             INFO("Connection was closed by peer\n");
             return;
         }
-        if (res < 0) {
+        if (sockRes < 0) {
             ERROR("Can not read from socket: %s\n", strerror(errno));
             return;
         }
-        size_t read = res;
+        size_t sockRead = (size_t) sockRes;
 
         bool shouldContinue = false;
         for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
             size_t prefixSz = commands[i].prefixSz;
-            if (read < prefixSz) {
+            if (sockRead < prefixSz) {
                 shouldContinue = true;
             } else if (strncmp(commands[i].prefix, command, prefixSz) == 0) {
                 ssize_t res = recv(s, command, prefixSz, MSG_WAITALL);
-                size_t read = res > 0 ? res : 0;
+                size_t read = res > 0 ? (size_t) res : 0;
                 if (read != prefixSz) {
                     ERROR("Can not pop from socket queue\n");
                     return;
@@ -270,7 +277,7 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
     }
 }
 
-static bool module_usage(const struct txvc_module *m, void *extra) {
+static bool module_usage(const struct txvc_module *m, const void *extra) {
     TXVC_UNUSED(extra);
     printf("\"%s\":\n%s\n", m->name(), m->help());
     return true;
@@ -288,7 +295,14 @@ int main(int argc, char**argv) {
     struct sigaction sa;
     sa.sa_flags = 0;
     sigemptyset(&sa.sa_mask);
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
+#endif
     sa.sa_handler = sigint_handler;
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
     sigaction(SIGINT, &sa, NULL);
 
     const struct txvc_module *m = activate_module(argv[1]);
