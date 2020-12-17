@@ -15,6 +15,7 @@ add_executable(TinyXVC
     src/utils.c
     src/log.c
     src/driver.c
+    src/alias.c
     src/driver/echo.c
     src/driver/ft2232h.c
     )

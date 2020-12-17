@@ -32,9 +32,8 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
 
 TXVC_DRIVER(echo) = {
     .name = "echo",
-    .help = "Simple loopback driver that forwards TDI vector to TDO\n"
-            "No real device is involved\n"
-            "Parameters: none\n",
+    .help = "Simple loopback driver that forwards TDI vector to TDO. No real device is involved\n"
+            "Parameters:\n   none\n",
     .activate = activate,
     .deactivate = deactivate,
     .max_vector_bits = max_vector_bits,

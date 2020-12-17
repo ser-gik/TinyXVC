@@ -4,17 +4,99 @@
 
 #include <libftdi1/ftdi.h>
 
-#include <stdint.h>
 #include <unistd.h>
 
 #include <assert.h>
 #include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 TXVC_DEFAULT_LOG_TAG(FT2232H);
 
 #define MAX_VECTOR_BITS_PER_ROUND 2048
-static_assert((MAX_VECTOR_BITS_PER_ROUND % 8) == 0, "todo");
+static_assert((MAX_VECTOR_BITS_PER_ROUND % 8) == 0, "Max bits must be an integer number of bytes");
 #define MAX_VECTOR_BYTES_PER_ROUND (MAX_VECTOR_BITS_PER_ROUND / 8)
+
+enum pin_role {
+    PIN_ROLE_INVALID = 0,
+#define PIN_ROLE(name, enumVal, descr) enumVal,
+#include "ft2232h_enums.inc"
+};
+
+enum clk_edge {
+    CLK_EDGE_INVALID = 0,
+#define CLK_EDGE(name, enumVal, descr) enumVal,
+#include "ft2232h_enums.inc"
+};
+
+enum pin_level {
+    PIN_LEVEL_INVALID = 0,
+#define PIN_LEVEL(name, enumVal, descr) enumVal,
+#include "ft2232h_enums.inc"
+};
+
+static enum pin_role str_to_pin_role(const char *s) {
+#define PIN_ROLE(name, enumVal, descr) if (strcmp(name, s) == 0) return enumVal;
+#include "ft2232h_enums.inc"
+    return PIN_ROLE_INVALID;
+}
+
+static enum clk_edge str_to_clk_edge(const char *s) {
+#define CLK_EDGE(name, enumVal, descr) if (strcmp(name, s) == 0) return enumVal;
+#include "ft2232h_enums.inc"
+    return CLK_EDGE_INVALID;
+}
+
+static enum pin_level str_to_pin_level(const char *s) {
+#define PIN_LEVEL(name, enumVal, descr) if (strcmp(name, s) == 0) return enumVal;
+#include "ft2232h_enums.inc"
+    return PIN_LEVEL_INVALID;
+}
+
+static enum ftdi_interface str_to_ftdi_interface(const char *s) {
+#define FTDI_INTERFACE(name, enumVal, descr) if (strcmp(name, s) == 0) return enumVal;
+#include "ft2232h_enums.inc"
+    return -1;
+}
+
+static int str_to_usb_id(const char *s) {
+    char *endp;
+    long res = strtol(s, &endp, 16);
+    return *endp != '\0' ||  res <= 0l || res > 0xffffl ? -1 : (int) res;
+}
+
+struct ft_config {
+    int vid;
+    int pid;
+    enum ftdi_interface channel;
+    enum pin_level tck_idle_level;
+    enum clk_edge tdi_tms_changing_edge;
+    enum clk_edge tdo_sampling_edge;
+    enum pin_role d_pins[8];
+};
+
+static bool load_config(const char **argNames, const char **argValues, struct ft_config *out) {
+    memset(out, 0, sizeof(*out));
+    out->channel = -1;
+    for (;*argNames; argNames++, argValues++) {
+#define FT_PARAM(name, configField, converterFunc, validation, descr) \
+        if (strcmp(name, *argNames) == 0) { \
+            out->configField = converterFunc(*argValues); \
+            continue; \
+        }
+#include "ft2232h_params.inc"
+        WARN("Unknown parameter: \"%s=%s\"\n", *argNames, *argValues);
+    }
+#define FT_PARAM(name, configField, converterFunc, validation, descr) \
+        if (!(out->configField validation)) { \
+            ERROR("Bad or missing \"%s\"\n", name); \
+            return false; \
+        }
+#include "ft2232h_params.inc"
+    return true;
+}
+
 
 struct profile {
     const char* name;
@@ -28,6 +110,7 @@ struct profile {
 
 static struct {
     const struct profile *profile;
+    struct ft_config config;
     struct ftdi_version_info info;
     struct ftdi_context ctx;
 } gFtdi;
@@ -149,6 +232,10 @@ static void list_profiles(void) {
 }
 
 static bool activate(const char **argNames, const char **argValues){
+    if (!load_config(argNames, argValues, &gFtdi.config)) {
+        return false;
+    }
+
     gFtdi.profile = NULL;
     while (*argNames) {
         if (strcmp("profile", *argNames) == 0) {
@@ -237,8 +324,24 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
 
 TXVC_DRIVER(ft2232h) = {
     .name = "ft2232h",
-    .help = "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
-            "Parameters: profile=<name>\n",
+    .help =
+        "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
+        "Parameters:\n"
+#define FT_PARAM(name, configField, converterFunc, validation, descr) "  \"" name "\" - " descr "\n"
+#include "ft2232h_params.inc"
+        "Allowed pin roles:\n"
+#define PIN_ROLE(name, enumVal, descr) "  \"" name "\" - " descr "\n"
+#include "ft2232h_enums.inc"
+        "Allowed clock edges:\n"
+#define CLK_EDGE(name, enumVal, descr) "  \"" name "\" - " descr "\n"
+#include "ft2232h_enums.inc"
+        "Allowed pin levels:\n"
+#define PIN_LEVEL(name, enumVal, descr) "  \"" name "\" - " descr "\n"
+#include "ft2232h_enums.inc"
+        "Allowed FTDI channels:\n"
+#define FTDI_INTERFACE(name, enumVal, descr) "  \"" name "\" - " descr "\n"
+#include "ft2232h_enums.inc"
+        ,
     .activate = activate,
     .deactivate = deactivate,
     .max_vector_bits = max_vector_bits,
