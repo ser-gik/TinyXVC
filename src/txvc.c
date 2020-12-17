@@ -1,7 +1,7 @@
 
-#include "fixtures.h"
+#include "driver.h"
 #include "log.h"
-#include "module.h"
+#include "utils.h"
 
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -27,16 +27,16 @@ static void sigint_handler(int signo) {
     shouldTerminate = 1;
 }
 
-static bool find_by_name(const struct txvc_module *m, const void *extra) {
+static bool find_by_name(const struct txvc_driver *d, const void *extra) {
     const char* name = extra;
-    return strcmp(name, m->name) != 0;
+    return strcmp(name, d->name) != 0;
 }
 
-static const struct txvc_module *activate_module(const char *argStr) {
+static const struct txvc_driver *activate_driver(const char *argStr) {
     /*
      * Copy the whole argstring in a temporary buffer and cut it onto name,value chuncks.
      * Provided format is:
-     * <mdule name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...
+     * <driver name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...
      */
     char args[1024];
     strncpy(args, argStr, sizeof(args));
@@ -66,16 +66,16 @@ static const struct txvc_module *activate_module(const char *argStr) {
         }
     }
 
-    const struct txvc_module *m = txvc_enumerate_modules(find_by_name, name);
-    if (m) {
-        if (!m->activate(argNames, argValues)) {
-            ERROR("Failed to activate module \"%s\"\n", name);
-            m = NULL;
+    const struct txvc_driver *d = txvc_enumerate_drivers(find_by_name, name);
+    if (d) {
+        if (!d->activate(argNames, argValues)) {
+            ERROR("Failed to activate driver \"%s\"\n", name);
+            d = NULL;
         }
     } else {
-        ERROR("Can not find module \"%s\"\n", name);
+        ERROR("Can not find driver \"%s\"\n", name);
     }
-    return m;
+    return d;
 }
 
 static void log_vector(const char* name, const uint8_t* data, size_t sz) {
@@ -127,8 +127,8 @@ static int recv_xvc_int(int s) {
     return -1;
 }
 
-static bool cmd_getinfo(int s, const struct txvc_module *m) {
-    int maxVectorBits = m->max_vector_bits();
+static bool cmd_getinfo(int s, const struct txvc_driver *d) {
+    int maxVectorBits = d->max_vector_bits();
     if (maxVectorBits > MAX_VECTOR_BITS) {
         maxVectorBits = MAX_VECTOR_BITS;
     }
@@ -138,12 +138,12 @@ static bool cmd_getinfo(int s, const struct txvc_module *m) {
     return send_data(s, response, (size_t) len);
 }
 
-static bool cmd_settck(int s, const struct txvc_module *m) {
+static bool cmd_settck(int s, const struct txvc_driver *d) {
     int suggestedTckPeriod = recv_xvc_int(s);
     if (suggestedTckPeriod < 0) {
         return false;
     }
-    int tckPeriod = m->set_tck_period(suggestedTckPeriod);
+    int tckPeriod = d->set_tck_period(suggestedTckPeriod);
     if (tckPeriod <= 0) {
         ERROR("%s: bad period: %dns\n", __func__, tckPeriod);
         return false;
@@ -158,7 +158,7 @@ static bool cmd_settck(int s, const struct txvc_module *m) {
     return send_data(s, response, 4);
 }
 
-static bool cmd_shift(int s, const struct txvc_module *m) {
+static bool cmd_shift(int s, const struct txvc_driver *d) {
     int numBits = recv_xvc_int(s);
     if (numBits < 0 || numBits > MAX_VECTOR_BITS) {
         ERROR("Bad vector size: %d (max: %d)\n", numBits, MAX_VECTOR_BITS);
@@ -174,18 +174,18 @@ static bool cmd_shift(int s, const struct txvc_module *m) {
     log_vector("TMS", tms, bytesPerVector);
     log_vector("TDI", tdi, bytesPerVector);
     uint8_t tdo[MAX_VECTOR_BITS / 8 + 1];
-    if (!m->shift_bits(numBits, tms, tdi, tdo)) {
+    if (!d->shift_bits(numBits, tms, tdi, tdo)) {
         return false;
     }
     log_vector("TDO", tdo, bytesPerVector);
     return send_data(s, tdo, bytesPerVector);
 }
 
-static void run_xvc_connectin(int s, const struct txvc_module *m) {
+static void run_xvc_connectin(int s, const struct txvc_driver *d) {
     const struct {
         size_t prefixSz;
         const char *prefix;
-        bool (*handler)(int s, const struct txvc_module *m);
+        bool (*handler)(int s, const struct txvc_driver *m);
     } commands[] = {
 #define CMD(name) { sizeof (#name ":") - 1, #name ":", cmd_ ## name }
         CMD(getinfo),
@@ -219,7 +219,7 @@ static void run_xvc_connectin(int s, const struct txvc_module *m) {
                     ERROR("Can not pop from socket queue\n");
                     return;
                 }
-                if (!commands[i].handler(s, m)) {
+                if (!commands[i].handler(s, d)) {
                     return;
                 }
                 shouldContinue = true;
@@ -234,7 +234,7 @@ static void run_xvc_connectin(int s, const struct txvc_module *m) {
     }
 }
 
-static void run_server(unsigned short port, const struct txvc_module *m) {
+static void run_server(unsigned short port, const struct txvc_driver *d) {
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket < 0) {
         ERROR("Can not create socket: %s\n", strerror(errno));
@@ -271,24 +271,24 @@ static void run_server(unsigned short port, const struct txvc_module *m) {
         } else {
             INFO("Accepted connection from unknown address\n");
         }
-        run_xvc_connectin(s, m);
+        run_xvc_connectin(s, d);
         shutdown(s, SHUT_RDWR);
         close(s);
     }
 }
 
-static bool module_usage(const struct txvc_module *m, const void *extra) {
+static bool driver_usage(const struct txvc_driver *d, const void *extra) {
     TXVC_UNUSED(extra);
-    printf("\"%s\":\n%s\n", m->name, m->help);
+    printf("\"%s\":\n%s\n", d->name, d->help);
     return true;
 }
 
 int main(int argc, char**argv) {
     if (argc != 2) {
-        printf("Usage:\n\t%s <module name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...\n",
+        printf("Usage:\n\t%s <driver name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...\n",
                 argv[0]);
-        printf("Available modules:\n");
-        txvc_enumerate_modules(module_usage, NULL);
+        printf("Available drivers:\n");
+        txvc_enumerate_drivers(driver_usage, NULL);
         return 1;
     }
 
@@ -305,11 +305,11 @@ int main(int argc, char**argv) {
 #endif
     sigaction(SIGINT, &sa, NULL);
 
-    const struct txvc_module *m = activate_module(argv[1]);
-    if (m) {
-        run_server(2542, m);
-        if (!m->deactivate()) {
-            WARN("Failed to deactivate module \"%s\"\n", m->name);
+    const struct txvc_driver *d = activate_driver(argv[1]);
+    if (d) {
+        run_server(2542, d);
+        if (!d->deactivate()) {
+            WARN("Failed to deactivate driver \"%s\"\n", d->name);
         }
     }
     return 0;

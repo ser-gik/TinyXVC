@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-struct txvc_module {
+struct txvc_driver {
     const char *name;
     const char *help;
 
@@ -20,12 +20,12 @@ struct txvc_module {
             );
 } __attribute__((aligned(16)));
 
-#define TXVC_MODULE(name) \
-    static struct txvc_module name \
+#define TXVC_DRIVER(name) \
+    static struct txvc_driver name \
     __attribute_used__ \
     __attribute__((aligned(16))) \
-    __attribute__((section(".txvc_modules")))
+    __attribute__((section(".txvc_drivers")))
 
-extern const struct txvc_module* txvc_enumerate_modules(
-        bool (*fn)(const struct txvc_module *m, const void *extra), const void *extra);
+extern const struct txvc_driver* txvc_enumerate_drivers(
+        bool (*fn)(const struct txvc_driver *d, const void *extra), const void *extra);
 

@@ -1,7 +1,6 @@
 
-#include "module.h"
-
-#include "fixtures.h"
+#include "driver.h"
+#include "utils.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -31,9 +30,9 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
     return true;
 }
 
-TXVC_MODULE(echo) = {
+TXVC_DRIVER(echo) = {
     .name = "echo",
-    .help = "Simple loopback module that forwards TDI vector to TDO\n"
+    .help = "Simple loopback driver that forwards TDI vector to TDO\n"
             "No real device is involved\n"
             "Parameters: none\n",
     .activate = activate,

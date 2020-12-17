@@ -1,5 +1,5 @@
 
-#include "module.h"
+#include "driver.h"
 #include "log.h"
 
 #include <libftdi1/ftdi.h>
@@ -235,7 +235,7 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
     return do_shift_bits(numBits, tmsVector, tdiVector, tdoVector);
 }
 
-TXVC_MODULE(ft2232h) = {
+TXVC_DRIVER(ft2232h) = {
     .name = "ft2232h",
     .help = "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
             "Parameters: profile=<name>\n",
