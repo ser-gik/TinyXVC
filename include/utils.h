@@ -5,3 +5,5 @@
 
 extern const char* byte_to_bitstring(unsigned char c);
 
+extern unsigned long long current_time_micros(void);
+

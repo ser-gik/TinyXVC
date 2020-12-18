@@ -1,4 +1,5 @@
 
+#include "alias.h"
 #include "driver.h"
 #include "log.h"
 #include "utils.h"
@@ -33,6 +34,14 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
 }
 
 static const struct txvc_driver *activate_driver(const char *argStr) {
+    for (const struct txvc_profile_alias *alias = txvc_profile_aliases; alias->alias; alias++) {
+        if (strcmp(argStr, alias->alias) == 0) {
+            INFO("Found alias %s (%s),\n", alias->alias, alias->description);
+            INFO("using profile %s\n", alias->profile);
+            argStr = alias->profile;
+        }
+    }
+
     /*
      * Copy the whole argstring in a temporary buffer and cut it onto name,value chuncks.
      * Provided format is:

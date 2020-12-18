@@ -1,6 +1,8 @@
 
 #include "utils.h"
 
+#include <time.h>
+
 const char* byte_to_bitstring(unsigned char c) {
     static const char* table[256] = {
 #define STR(s)                      STR_(s)
@@ -33,5 +35,11 @@ const char* byte_to_bitstring(unsigned char c) {
 #undef ALL
     };
     return table[c];
+}
+
+extern unsigned long long current_time_micros(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec * 1000ull * 1000ull + ts.tv_nsec / 1000ull;
 }
 
