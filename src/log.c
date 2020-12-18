@@ -51,5 +51,6 @@ void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const c
     }
 
     printf("%s%s%s", escColor, buf, TEXT_COLOR_RESET);
+    fflush(stdout);
 }
 

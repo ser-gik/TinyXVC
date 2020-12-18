@@ -179,7 +179,7 @@ static void run_connectin(int s, const struct txvc_driver *d,
 
 void txvc_run_server(uint32_t inAddr, uint16_t port,
         const struct txvc_driver *driver, volatile sig_atomic_t *shouldTerminate) {
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    int serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (serverSocket < 0) {
         ERROR("Can not create socket: %s\n", strerror(errno));
         return;
@@ -201,21 +201,23 @@ void txvc_run_server(uint32_t inAddr, uint16_t port,
         return;
     }
 
-    INFO("Start listening for incoming connections at port %d...\n", port);
+    INFO("Listening for incoming connections at %s:%d...\n", inet_ntoa(addr.sin_addr),
+            ntohs(addr.sin_port));
     while (!*shouldTerminate) {
-        socklen_t length = sizeof(addr);
-        int s = accept(serverSocket, (struct sockaddr *) &addr, &length);
+        struct sockaddr_in peerAddr;
+        socklen_t length = sizeof(peerAddr);
+        int s = accept(serverSocket, (struct sockaddr *) &peerAddr, &length);
         if (s < 0) {
             ERROR("Failed to accept connection: %s\n", strerror(errno));
             continue;
         }
-        if (addr.sin_family == AF_INET) {
-            INFO("Accepted connection from %s:%d\n",
-                    inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+        if (peerAddr.sin_family == AF_INET) {
+            INFO("Accepted connection from %s:%d\n", inet_ntoa(peerAddr.sin_addr),
+                    ntohs(peerAddr.sin_port));
+            run_connectin(s, driver, shouldTerminate);
         } else {
-            INFO("Accepted connection from unknown address\n");
+            WARN("Ignored connection from family %d\n", peerAddr.sin_family);
         }
-        run_connectin(s, driver, shouldTerminate);
         shutdown(s, SHUT_RDWR);
         close(s);
     }
