@@ -10,7 +10,24 @@
 #define TEXT_COLOR_YELLOW "\x1b[33m"
 #define TEXT_COLOR_RESET "\x1b[0m"
 
-void txvc_log(const struct txvc_log_tag *tag, char level, const char *fmt, ...) {
+static enum txvc_log_level gMinLevel = LOG_LEVEL_ERROR;
+
+static const char gLevelNames[] = {
+    [LOG_LEVEL_VERBOSE] = 'V',
+    [LOG_LEVEL_INFO] = 'I',
+    [LOG_LEVEL_WARN] = 'W',
+    [LOG_LEVEL_ERROR] = 'E',
+};
+
+void txvc_set_log_min_level(enum txvc_log_level level) {
+    gMinLevel = level;
+}
+
+void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...) {
+    if (level < gMinLevel) {
+        return;
+    }
+
     va_list ap;
     va_start(ap, fmt);
     char buf[1024];
@@ -18,7 +35,7 @@ void txvc_log(const struct txvc_log_tag *tag, char level, const char *fmt, ...) 
     memcpy(buf, tag->str, tagLen);
     buf[tagLen + 0] = ':';
     buf[tagLen + 1] = ' ';
-    buf[tagLen + 2] = level;
+    buf[tagLen + 2] = gLevelNames[level];
     buf[tagLen + 3] = ':';
     buf[tagLen + 4] = ' ';
     vsnprintf(buf + tagLen + 5, sizeof(buf) - tagLen - 5, fmt, ap);
@@ -26,10 +43,10 @@ void txvc_log(const struct txvc_log_tag *tag, char level, const char *fmt, ...) 
 
     const char* escColor;
     switch (level) {
-        case 'V': escColor = TEXT_COLOR_RESET; break;
-        case 'I': escColor = TEXT_COLOR_GREEN; break;
-        case 'W': escColor = TEXT_COLOR_YELLOW; break;
-        case 'E': escColor = TEXT_COLOR_RED; break;
+        case LOG_LEVEL_VERBOSE: escColor = TEXT_COLOR_RESET; break;
+        case LOG_LEVEL_INFO: escColor = TEXT_COLOR_GREEN; break;
+        case LOG_LEVEL_WARN: escColor = TEXT_COLOR_YELLOW; break;
+        case LOG_LEVEL_ERROR: escColor = TEXT_COLOR_RED; break;
         default: escColor = TEXT_COLOR_RESET; break;
     }
 

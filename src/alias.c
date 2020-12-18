@@ -6,6 +6,7 @@
 const struct txvc_profile_alias txvc_profile_aliases[] = {
     {
         .alias = "mimas_a7",
+        .description = "Numato Lab Mimas Artix 7 FPGA Module",
         .profile = "ft2232h:"
             "vid=2a19,"
             "pid=1009,"
@@ -21,11 +22,10 @@ const struct txvc_profile_alias txvc_profile_aliases[] = {
             "d5=ignored,"
             "d6=driver_low,"
             "d7=driver_low,",
-        .description = "Numato Lab Mimas Artix 7 FPGA Module",
     },
     {
         .alias = NULL,
-        .profile = NULL,
         .description = NULL,
+        .profile = NULL,
     },
 };
