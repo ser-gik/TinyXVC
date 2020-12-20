@@ -21,10 +21,10 @@ struct txvc_driver {
 } __attribute__((aligned(16)));
 
 #define TXVC_DRIVER(name) \
-    static struct txvc_driver name \
-    __attribute_used__ \
+    static const struct txvc_driver txvc_driver_ ## name \
+    __attribute__((section(".txvc_driver"))) \
+    __attribute__((used)) \
     __attribute__((aligned(16))) \
-    __attribute__((section(".txvc_drivers")))
 
 extern const struct txvc_driver* txvc_enumerate_drivers(
         bool (*fn)(const struct txvc_driver *d, const void *extra), const void *extra);

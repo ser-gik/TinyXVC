@@ -1,6 +1,8 @@
 
 #pragma once
 
+#include "utils.h"
+
 struct txvc_log_tag {
     char str[16];
 };
@@ -14,7 +16,7 @@ enum txvc_log_level {
 
 extern void txvc_set_log_min_level(enum txvc_log_level level);
 
-__attribute__((format(printf, 3, 4)))
+TXVC_PRINTF_LIKE(3, 4)
 extern void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...);
 
 #define TXVC_TAG_PADDED__(tag) \

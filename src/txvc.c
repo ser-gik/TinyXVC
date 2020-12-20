@@ -25,7 +25,7 @@ static void sigint_handler(int signo) {
 }
 
 static void listen_for_user_interrupt(void) {
-    /* 
+    /*
      * Received SIGINT must NOT restart interrupted syscalls, so that server code will be able
      * to test termination flag in a timely manner.
      * Don't use signal() as it may force restarts.
@@ -120,7 +120,7 @@ int main(int argc, char**argv) {
 
     listen_for_user_interrupt();
 
-    txvc_set_log_min_level(LOG_LEVEL_INFO);
+    txvc_set_log_min_level(LOG_LEVEL_VERBOSE);
     const struct txvc_driver *d = activate_driver(argv[1]);
     if (d) {
         txvc_run_server(0x7f000001, 2542, d, &shouldTerminate);
