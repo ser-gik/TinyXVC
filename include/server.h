@@ -3,8 +3,6 @@
 
 #include "driver.h"
 
-#include <stdbool.h>
-#include <stdint.h>
 #include <signal.h>
 
 extern void txvc_run_server(const char *address,

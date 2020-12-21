@@ -5,7 +5,6 @@
 #include "server.h"
 #include "utils.h"
 
-#include <bits/getopt_core.h>
 #include <unistd.h>
 
 #include <string.h>
@@ -18,110 +17,24 @@
 
 TXVC_DEFAULT_LOG_TAG(txvc);
 
-static bool driver_usage(const struct txvc_driver *d, const void *extra) {
-    TXVC_UNUSED(extra);
-    printf("\"%s\":\n%s\n", d->name, d->help);
-    return true;
-}
-
-static void print_available_aliases(void) {
-    for (const struct txvc_profile_alias *alias = txvc_profile_aliases; alias->alias; alias++) {
-        printf("\"%s\" - %s\n", alias->alias, alias->description);
-    }
-}
-
 #define DEFAULT_SERVER_ADDR "127.0.0.1:2542"
 
-#define CLI_OPTION_LIST_ITEMS(X) \
-    X(const char *, serverAddr, "a", " <ipv4_address:port>",\
-        "Colon-separated IPv4 address and port to listen for incoming XVC connections at" \
-            " (default: " DEFAULT_SERVER_ADDR ")", optarg) \
-    X(const char *, profile,    "p", " <profile_string_or_alias>",\
-        "Server HW profile or profile alias, see below", optarg) \
-    X(bool,         verbose,    "v", "",\
-        "Enable verbose output", true) \
-    X(bool,         help,       "h", "",\
-        "Print this message", true) \
+#define CLI_OPTION_LIST_ITEMS(OPT, OPT_WITH_ARG)                                                   \
+    OPT("h", help, "Print this message")                                                           \
+    OPT("v", verbose, "Enable verbose output")                                                     \
+    OPT_WITH_ARG("p", profile, "Server HW profile or profile alias",                               \
+            "profile_string_or_alias", const char *, optarg)                                       \
+    OPT_WITH_ARG("a", serverAddr, "Colon-separated IPv4 address and port to listen for incoming"   \
+                                  " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",        \
+            "ipv4_address:port", const char *, optarg)                                             \
 
 struct cli_options {
-#define AS_STRUCT_FIELD(type, name, optChar, optArg, description, initializer) type name;
-    CLI_OPTION_LIST_ITEMS(AS_STRUCT_FIELD)
+#define AS_STRUCT_FIELD_FLAG(optChar, name, description) bool name;
+#define AS_STRUCT_FIELD(optChar, name, description, optArg, type, initializer) type name;
+    CLI_OPTION_LIST_ITEMS(AS_STRUCT_FIELD_FLAG, AS_STRUCT_FIELD)
+#undef AS_STRUCT_FIELD_FLAG
 #undef AS_STRUCT_FIELD
 };
-
-static void printUsage(const char *progname, bool detailed) {
-#define AS_SYNOPSYS_ENTRY(type, name, optChar, optArg, description, initializer) \
-    "\t\t[-" optChar optArg "]\n"
-    const char *synopsysOptions = CLI_OPTION_LIST_ITEMS(AS_SYNOPSYS_ENTRY);
-#undef AS_SYNOPSYS_ENTRY
-
-#define AS_USAGE_ENTRY(type, name, optChar, optArg, description, initializer) \
-    " -" optChar " - " description "\n" 
-    const char *usageOptions = CLI_OPTION_LIST_ITEMS(AS_USAGE_ENTRY);
-#undef AS_USAGE_ENTRY
-
-    if (detailed) {
-        printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n");
-    }
-    printf("Usage: %s\n"
-           "%s\n"
-           "%s\n",
-           progname, synopsysOptions, usageOptions);
-
-    if (!detailed) {
-        return;
-    }
-
-    printf("\tProfiles:\n");
-    printf("HW profile is a specification that defines a backend to be used by server"
-           " and its parameters. Backend here means a particular device that eventually"
-           " receives and answers to XVC commands. HW profile is specified in the following form:\n"
-           "\n\t<driver_name>:<arg0>=<val0>,<arg1>=<val1>,<arg2>=<val2>,...\n\n"
-           "Available driver names as well as their specific parameters are listed below."
-           " Also there are a few predefined profile aliases for specific HW that can be used"
-           " instead of fully specified description, see below.\n\n");
-    printf("\tDrivers:\n");
-    txvc_enumerate_drivers(driver_usage, NULL);
-    printf("\n");
-    printf("\tAliases:\n");
-    print_available_aliases();
-    printf("\n");
-}
-
-
-static bool parse_cli_options(int argc, char **argv, struct cli_options *out) {
-    char optstring[128];
-#define AS_FORMAT_SPEC(type, name, optChar, optArg, description, initializer) \
-    "%s"
-#define AS_OPTSTR_ENTRY(type, name, optChar, optArg, description, initializer) \
-    , (optArg[0] ? optChar ":" : optChar)
-
-    snprintf(optstring, sizeof(optstring),
-        CLI_OPTION_LIST_ITEMS(AS_FORMAT_SPEC)
-        CLI_OPTION_LIST_ITEMS(AS_OPTSTR_ENTRY)
-        );
-#undef AS_OPTSTR_ENTRY
-#undef AS_FORMAT_SPEC
-
-    int opt;
-    while ((opt = getopt(argc, argv, optstring)) != -1) {
-#define APPLY_OPTION(type, name, optChar, optArg, description, initializer) \
-        if (opt == optChar[0]) { \
-            out->name = initializer; \
-            continue; \
-        }
-
-        CLI_OPTION_LIST_ITEMS(APPLY_OPTION)
-
-#undef APPLY_OPTION
-        return false;
-    }
-
-    if (argv[optind] != NULL) {
-        fprintf(stderr, "%s: unrecognized extra operands\n", argv[0]);
-    }
-    return argv[optind] == NULL;
-}
 
 static volatile sig_atomic_t shouldTerminate = 0;
 
@@ -150,6 +63,89 @@ static void listen_for_user_interrupt(void) {
 #pragma clang diagnostic pop
 #endif
     sigaction(SIGINT, &sa, NULL);
+}
+
+static bool driver_usage(const struct txvc_driver *d, const void *extra) {
+    TXVC_UNUSED(extra);
+    printf("\"%s\":\n%s\n", d->name, d->help);
+    return true;
+}
+
+static void print_available_aliases(void) {
+    for (const struct txvc_profile_alias *alias = txvc_profile_aliases; alias->alias; alias++) {
+        printf("\"%s\" - %s\n", alias->alias, alias->description);
+    }
+}
+
+static void printUsage(const char *progname, bool detailed) {
+#define AS_SYNOPSYS_ENTRY_FLAG(optChar, name, description)                                         \
+    "[-" optChar "]"
+#define AS_SYNOPSYS_ENTRY(optChar, name, description, optArg, type, initializer)                   \
+    "[-" optChar " <" optArg ">]"
+    const char *synopsysOptions = CLI_OPTION_LIST_ITEMS(AS_SYNOPSYS_ENTRY_FLAG, AS_SYNOPSYS_ENTRY);
+#undef AS_SYNOPSYS_ENTRY_FLAG
+#undef AS_SYNOPSYS_ENTRY
+#define AS_USAGE_ENTRY_FLAG(optChar, name, description)                                            \
+    " -" optChar " : " description "\n"
+#define AS_USAGE_ENTRY(optChar, name, description, optArg, type, initializer)                      \
+    " -" optChar " : " description "\n"
+    const char *usageOptions = CLI_OPTION_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
+#undef AS_USAGE_ENTRY_FLAG
+#undef AS_USAGE_ENTRY
+
+    if (detailed) {
+        printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n");
+    }
+    printf("Usage: %s %s\n"
+           "%s\n",
+           progname, synopsysOptions, usageOptions);
+    if (detailed) {
+        printf("\tProfiles:\n");
+        printf("HW profile is a specification that defines a backend to be used by server"
+               " and its parameters. Backend here means a particular device that eventually"
+               " receives and answers to XVC commands. HW profile is specified in the following"
+               " form:\n\n\t<driver_name>:<arg0>=<val0>,<arg1>=<val1>,<arg2>=<val2>,...\n\n"
+               "Available driver names as well as their specific parameters are listed below."
+               " Also there are a few predefined profile aliases for specific HW that can be used"
+               " instead of fully specified description, see below.\n\n");
+        printf("\tDrivers:\n");
+        txvc_enumerate_drivers(driver_usage, NULL);
+        printf("\n");
+        printf("\tAliases:\n");
+        print_available_aliases();
+        printf("\n");
+    }
+}
+
+static bool parse_cli_options(int argc, char **argv, struct cli_options *out) {
+    memset(out, 0, sizeof(*out));
+#define AS_OPTSTR_FLAG(optChar, name, description) optChar
+#define AS_OPTSTR(optChar, name, description, optArg, type, initializer) optChar ":"
+    const char *optstr = CLI_OPTION_LIST_ITEMS(AS_OPTSTR_FLAG, AS_OPTSTR);
+#undef AS_OPTSTR_FLAG
+#undef AS_OPTSTR
+    int opt;
+    while ((opt = getopt(argc, argv, optstr)) != -1) {
+#define APPLY_OPTION_FLAG(optChar, name, description)                                              \
+        if (opt == optChar[0]) {                                                                   \
+            out->name = true;                                                                      \
+            continue;                                                                              \
+        }
+#define APPLY_OPTION(optChar, name, description, optArg, type, initializer)                        \
+        if (opt == optChar[0]) {                                                                   \
+            out->name = initializer;                                                               \
+            continue;                                                                              \
+        }
+        CLI_OPTION_LIST_ITEMS(APPLY_OPTION_FLAG, APPLY_OPTION)
+#undef APPLY_OPTION_FLAG
+#undef APPLY_OPTION
+        return false;
+    }
+
+    if (argv[optind] != NULL) {
+        fprintf(stderr, "%s: unrecognized extra operands\n", argv[0]);
+    }
+    return argv[optind] == NULL;
 }
 
 static bool find_by_name(const struct txvc_driver *d, const void *extra) {
@@ -212,12 +208,15 @@ static const struct txvc_driver *activate_driver(const char *profile) {
 }
 
 int main(int argc, char**argv) {
+    listen_for_user_interrupt();
+
     struct cli_options opts = { 0 };
     if (!parse_cli_options(argc, argv, &opts)) {
         printUsage(argv[0], false);
         return EXIT_FAILURE;
     }
 
+    txvc_set_log_min_level(opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
     if (opts.help) {
         printUsage(argv[0], true);
         return EXIT_SUCCESS;
@@ -229,10 +228,6 @@ int main(int argc, char**argv) {
     if (!opts.serverAddr) {
         opts.serverAddr = DEFAULT_SERVER_ADDR;
     }
-    txvc_set_log_min_level(opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
-
-    listen_for_user_interrupt();
-
     const struct txvc_driver *d = activate_driver(opts.profile);
     if (d) {
         txvc_run_server(opts.serverAddr, d, &shouldTerminate);
