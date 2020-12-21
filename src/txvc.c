@@ -19,13 +19,13 @@ TXVC_DEFAULT_LOG_TAG(txvc);
 
 #define DEFAULT_SERVER_ADDR "127.0.0.1:2542"
 
-#define CLI_OPTION_LIST_ITEMS(OPT, OPT_WITH_ARG)                                                   \
-    OPT("h", help, "Print this message")                                                           \
-    OPT("v", verbose, "Enable verbose output")                                                     \
-    OPT_WITH_ARG("p", profile, "Server HW profile or profile alias",                               \
+#define CLI_OPTION_LIST_ITEMS(OPT_FLAG, OPT)                                                       \
+    OPT_FLAG("h", help, "Print this message")                                                      \
+    OPT_FLAG("v", verbose, "Enable verbose output")                                                \
+    OPT("p", profile, "Server HW profile or profile alias",                                        \
             "profile_string_or_alias", const char *, optarg)                                       \
-    OPT_WITH_ARG("a", serverAddr, "Colon-separated IPv4 address and port to listen for incoming"   \
-                                  " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",        \
+    OPT("a", serverAddr, "Colon-separated IPv4 address and port to listen for incoming"            \
+                         " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
             "ipv4_address:port", const char *, optarg)                                             \
 
 struct cli_options {
