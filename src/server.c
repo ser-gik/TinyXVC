@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 TXVC_DEFAULT_LOG_TAG(server);
 
@@ -177,7 +178,7 @@ static void run_connectin(int s, const struct txvc_driver *d,
     }
 }
 
-void txvc_run_server(uint32_t inAddr, uint16_t port,
+static void run_with_address(struct in_addr inAddr, in_port_t port,
         const struct txvc_driver *driver, volatile sig_atomic_t *shouldTerminate) {
     int serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (serverSocket < 0) {
@@ -187,11 +188,12 @@ void txvc_run_server(uint32_t inAddr, uint16_t port,
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
-        .sin_addr = { htonl(inAddr) },
+        .sin_addr = inAddr,
         .sin_zero = { 0 },
     };
     if (bind(serverSocket, (const struct sockaddr *)&addr, sizeof(addr))) {
-        ERROR("Can not bind socket to port %d: %s\n", port, strerror(errno));
+        ERROR("Can not bind socket to %s:%d: %s\n", inet_ntoa(addr.sin_addr),
+            ntohs(addr.sin_port), strerror(errno));
         close(serverSocket);
         return;
     }
@@ -221,5 +223,29 @@ void txvc_run_server(uint32_t inAddr, uint16_t port,
         shutdown(s, SHUT_RDWR);
         close(s);
     }
+}
+
+void txvc_run_server(const char *address,
+        const struct txvc_driver *driver, volatile sig_atomic_t *shouldTerminate) {
+    char buf[128];
+    strncpy(buf, address, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
+    char* tmp = strchr(buf, ':');
+    if (!tmp) goto bail_bad_addrstr;
+    *tmp++ = '\0';
+
+    const char *addrStr = buf;
+    const char *portStr = tmp;
+
+    struct in_addr addr;
+    if (!inet_aton(addrStr, &addr)) goto bail_bad_addrstr;
+    in_port_t port = (in_port_t) strtol(portStr, &tmp, 0);
+    if (*tmp) goto bail_bad_addrstr;
+
+    run_with_address(addr, port, driver,shouldTerminate);
+    return;
+
+bail_bad_addrstr:
+    ERROR("Bad \"inet-addr:port\": %s\n", address);
 }
 
