@@ -241,14 +241,15 @@ static bool do_shift_bits(struct driver *d, int numBits, const uint8_t *tmsVecto
         tdiPrev = tdi;
     }
 
-    struct ftdi_transfer_control* rdCtrl =
-        ftdi_read_data_submit(&d->ctx, recvBuf, numBits * 2);
-    struct ftdi_transfer_control* wrCtrl =
-        ftdi_write_data_submit(&d->ctx, sendBuf, numBits * 2);
-
-    if (ftdi_transfer_data_done(wrCtrl) != numBits * 2
-            || ftdi_transfer_data_done(rdCtrl) != numBits * 2) {
-        ERROR("Failed to shift %d bits: %s\n", numBits, ftdi_get_error_string(&d->ctx));
+    int transferSz = numBits * 2;
+    int res = ftdi_write_data(&d->ctx, sendBuf, transferSz);
+    if (res != transferSz) {
+        ERROR("Failed to write %d bytes: %s\n", transferSz, ftdi_get_error_string(&d->ctx));
+        return false;
+    }
+    res = ftdi_read_data(&d->ctx, recvBuf, transferSz);
+    if (res != transferSz) {
+        ERROR("Failed to read %d bytes: %s\n", transferSz, ftdi_get_error_string(&d->ctx));
         return false;
     }
 
