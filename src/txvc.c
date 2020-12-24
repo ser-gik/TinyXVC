@@ -28,7 +28,7 @@
 #include "driver.h"
 #include "log.h"
 #include "server.h"
-#include "utils.h"
+#include "txvc_defs.h"
 
 #include <unistd.h>
 

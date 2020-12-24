@@ -26,7 +26,7 @@
 
 #pragma once
 
-#include "utils.h"
+#include "txvc_defs.h"
 
 struct txvc_log_tag {
     char str[16];

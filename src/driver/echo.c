@@ -25,7 +25,7 @@
  */
 
 #include "driver.h"
-#include "utils.h"
+#include "txvc_defs.h"
 
 #include <stddef.h>
 #include <string.h>

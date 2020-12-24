@@ -26,7 +26,7 @@
 
 #include "driver.h"
 #include "log.h"
-#include "utils.h"
+#include "txvc_defs.h"
 
 #include <libftdi1/ftdi.h>
 

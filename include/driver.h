@@ -26,7 +26,7 @@
 
 #pragma once
 
-#include "utils.h"
+#include "txvc_defs.h"
 
 #include <stdbool.h>
 #include <stdint.h>

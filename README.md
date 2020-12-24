@@ -7,7 +7,9 @@ This program is an implementation of [XVC](https://github.com/Xilinx/XilinxVirtu
 protocol, that allows user to connect their custom hardware to the development tools via "virtual cable".
 
 Currently `txvc` supports only one type of backend - FT2232H chip, that acts as intermediate between
-PC and JTAG TAP. Users are encouraged to add their own backend implementations.
+PC and JTAG TAP.
+
+Users are encouraged to add their own backend implementations.
 
 ## How to use
 
