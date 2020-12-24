@@ -36,3 +36,12 @@ To get info about profiles and other options:
 $ ./txvc -h
 ```
 
+## Troubleshooting
+
+If you're experiencing failures from `ftdi_usb_open()`:
+- ensure that kernel `ftdi_sio` module is unloaded:
+  ```
+  $ sudo modprobe -r ftdi_sio
+  ```
+- install appropriate udev rules by following instructions from `udev/` and restart PC
+
