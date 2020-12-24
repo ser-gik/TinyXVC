@@ -24,7 +24,7 @@ TXVC_DEFAULT_LOG_TAG(txvc);
     OPT_FLAG("v", verbose, "Enable verbose output")                                                \
     OPT("p", profile, "Server HW profile or profile alias",                                        \
             "profile_string_or_alias", const char *, optarg)                                       \
-    OPT("a", serverAddr, "Colon-separated IPv4 address and port to listen for incoming"            \
+    OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
                          " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
             "ipv4_address:port", const char *, optarg)                                             \
 
@@ -71,12 +71,6 @@ static bool driver_usage(const struct txvc_driver *d, const void *extra) {
     return true;
 }
 
-static void print_available_aliases(void) {
-    for (const struct txvc_profile_alias *alias = txvc_profile_aliases; alias->alias; alias++) {
-        printf("\"%s\" - %s\n", alias->alias, alias->description);
-    }
-}
-
 static void printUsage(const char *progname, bool detailed) {
 #define AS_SYNOPSYS_ENTRY_FLAG(optChar, name, description)                                         \
     "[-" optChar "]"
@@ -94,7 +88,7 @@ static void printUsage(const char *progname, bool detailed) {
 #undef AS_USAGE_ENTRY
 
     if (detailed) {
-        printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n");
+        printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n\n");
     }
     printf("Usage: %s %s\n"
            "%s\n",
@@ -112,7 +106,7 @@ static void printUsage(const char *progname, bool detailed) {
         txvc_enumerate_drivers(driver_usage, NULL);
         printf("\n");
         printf("\tAliases:\n");
-        print_available_aliases();
+        txvc_print_all_aliases();
         printf("\n");
     }
 }
@@ -154,14 +148,6 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
 }
 
 static const struct txvc_driver *activate_driver(const char *profile) {
-    for (const struct txvc_profile_alias *alias = txvc_profile_aliases; alias->alias; alias++) {
-        if (strcmp(profile, alias->alias) == 0) {
-            INFO("Found alias %s (%s),\n", alias->alias, alias->description);
-            INFO("using profile %s\n", alias->profile);
-            profile = alias->profile;
-        }
-    }
-
     /*
      * Copy the whole profile string in a temporary buffer and cut it onto name,value chuncks.
      * Expected format is:
@@ -195,16 +181,16 @@ static const struct txvc_driver *activate_driver(const char *profile) {
         }
     }
 
-    const struct txvc_driver *d = txvc_enumerate_drivers(find_by_name, name);
-    if (d) {
-        if (!d->activate(argNames, argValues)) {
+    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, name);
+    if (driver) {
+        if (!driver->activate(argNames, argValues)) {
             ERROR("Failed to activate driver \"%s\"\n", name);
-            d = NULL;
+            driver = NULL;
         }
     } else {
         ERROR("Can not find driver \"%s\"\n", name);
     }
-    return d;
+    return driver;
 }
 
 int main(int argc, char**argv) {
@@ -225,16 +211,22 @@ int main(int argc, char**argv) {
         fprintf(stderr, "Profile is missing\n");
         return EXIT_FAILURE;
     }
+    const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
+    if (alias) {
+        INFO("Found alias %s (%s),\n", opts.profile, alias->description);
+        INFO("using profile %s\n", alias->profile);
+        opts.profile = alias->profile;
+    }
     if (!opts.serverAddr) {
         opts.serverAddr = DEFAULT_SERVER_ADDR;
     }
-    const struct txvc_driver *d = activate_driver(opts.profile);
-    if (d) {
-        txvc_run_server(opts.serverAddr, d, &shouldTerminate);
-        if (!d->deactivate()) {
-            WARN("Failed to deactivate driver \"%s\"\n", d->name);
-        }
+    const struct txvc_driver *driver = activate_driver(opts.profile);
+    if (!driver) {
+        return EXIT_FAILURE;
     }
-    return 0;
+
+    txvc_run_server(opts.serverAddr, driver, &shouldTerminate);
+    driver->deactivate();
+    return EXIT_SUCCESS;
 }
 

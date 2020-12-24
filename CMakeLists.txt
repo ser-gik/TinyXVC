@@ -12,7 +12,6 @@ include( ${LIBFTDI_USE_FILE} )
 
 add_executable(TinyXVC
     src/txvc.c
-    src/utils.c
     src/log.c
     src/driver.c
     src/alias.c
