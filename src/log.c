@@ -48,6 +48,10 @@ void txvc_set_log_min_level(enum txvc_log_level level) {
     gMinLevel = level;
 }
 
+bool txvc_log_level_enabled(enum txvc_log_level level) {
+    return gMinLevel <= level;
+}
+
 void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...) {
     if (level < gMinLevel) {
         return;

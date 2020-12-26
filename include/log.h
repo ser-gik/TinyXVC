@@ -28,6 +28,8 @@
 
 #include "txvc_defs.h"
 
+#include <stdbool.h>
+
 struct txvc_log_tag {
     char str[16];
 };
@@ -40,6 +42,8 @@ enum txvc_log_level {
 };
 
 extern void txvc_set_log_min_level(enum txvc_log_level level);
+
+extern bool txvc_log_level_enabled(enum txvc_log_level level);
 
 TXVC_PRINTF_LIKE(3, 4)
 extern void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...);
@@ -77,6 +81,7 @@ extern void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, 
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #endif
 
+#define VERBOSE_ENABLED txvc_log_level_enabled(LOG_LEVEL_VERBOSE)
 #define VERBOSE(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_VERBOSE, (fmt), ## __VA_ARGS__)
 #define INFO(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_INFO, (fmt), ## __VA_ARGS__)
 #define WARN(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_WARN, (fmt), ## __VA_ARGS__)

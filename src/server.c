@@ -45,52 +45,21 @@ TXVC_DEFAULT_LOG_TAG(server);
 
 #define MAX_VECTOR_BITS (32 * 1024)
 
-static void log_vector(const char* name, const uint8_t* data, size_t sz) {
-    static const char* byteToBitStr[256] = {
-#define STR(s)                      STR_(s)
-#define STR_(s)                     # s
-#define BITSTR_(a,b,c,d,e,f,g,h)    a ## b ## c ## d ## e ## f ## g ## h
-#define BITSTR(a,b,c,d,e,f,g,h)     STR(BITSTR_(a,b,c,d,e,f,g,h))
+static void log_vector(const char* name, const uint8_t* data, size_t numBits) {
+    if (!VERBOSE_ENABLED) {
+        return;
+    }
 
-#define G(a,b,c,d,e,f,g)            BITSTR(a,b,c,d,e,f,g,0), BITSTR(a,b,c,d,e,f,g,1)
-#define F(a,b,c,d,e,f)              G(a,b,c,d,e,f,0), G(a,b,c,d,e,f,1)
-#define E(a,b,c,d,e)                F(a,b,c,d,e,0), F(a,b,c,d,e,1)
-#define D(a,b,c,d)                  E(a,b,c,d,0), E(a,b,c,d,1)
-#define C(a,b,c)                    D(a,b,c,0), D(a,b,c,1)
-#define B(a,b)                      C(a,b,0), C(a,b,1)
-#define A(a)                        B(a,0), B(a,1)
-#define ALL()                       A(0), A(1)
-
-    ALL()
-
-#undef STR
-#undef STR_
-#undef BITSTR_
-#undef BITSTR
-#undef G
-#undef F
-#undef E
-#undef D
-#undef C
-#undef B
-#undef A
-#undef ALL
-    };
-
-    while (sz) {
-        size_t lineItems = sz > 8 ? 8 : sz;
-        VERBOSE("%s: %s %s %s %s %s %s %s %s\n", name,
-                lineItems > 0 ? byteToBitStr[data[0]] : "",
-                lineItems > 1 ? byteToBitStr[data[1]] : "",
-                lineItems > 2 ? byteToBitStr[data[2]] : "",
-                lineItems > 3 ? byteToBitStr[data[3]] : "",
-                lineItems > 4 ? byteToBitStr[data[4]] : "",
-                lineItems > 5 ? byteToBitStr[data[5]] : "",
-                lineItems > 6 ? byteToBitStr[data[6]] : "",
-                lineItems > 7 ? byteToBitStr[data[7]] : "");
-        sz -= lineItems;
-        if (sz) {
-            data += lineItems;
+    char bits[64 + 1];
+    size_t row = 0u;
+    for (size_t i = 0; i < numBits; i++) {
+        size_t col = i % 64;
+        char c = (data[i / 8] & (1 << (i % 8))) ? '1' : '0';
+        bits[col] = c;
+        if (i + 1 >= numBits || col == 63) {
+            bits[col + 1] = '\0';
+            VERBOSE("%s: %04zx: %s\n", name, row * 64, bits);
+            row++;
         }
     }
 }
@@ -169,13 +138,13 @@ static bool cmd_shift(int s, const struct txvc_driver *d) {
     if (!recv_data(s, tms, bytesPerVector) || !recv_data(s, tdi, bytesPerVector)) {
         return false;
     }
-    log_vector("TMS", tms, bytesPerVector);
-    log_vector("TDI", tdi, bytesPerVector);
+    log_vector("TMS", tms, numBits);
+    log_vector("TDI", tdi, numBits);
     uint8_t tdo[MAX_VECTOR_BITS / 8 + 1];
     if (!d->shift_bits(numBits, tms, tdi, tdo)) {
         return false;
     }
-    log_vector("TDO", tdo, bytesPerVector);
+    log_vector("TDO", tdo, numBits);
     return send_data(s, tdo, bytesPerVector);
 }
 
