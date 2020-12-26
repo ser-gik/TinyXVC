@@ -32,6 +32,7 @@
 
 #include <unistd.h>
 
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 #include <string.h>
@@ -52,6 +53,10 @@ TXVC_DEFAULT_LOG_TAG(txvc);
     OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
                          " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
             "ipv4_address:port", const char *, optarg)                                             \
+    OPT("t", initialTckPeriodNanos, "Initial TCK period, expressed in nanoseconds."                \
+                         " Can be used to enforce device to operate at specific rate if "          \
+                         " connected client doesn't set preferred value via \"settck\" command",   \
+            "initial_tck_period_ns", int, parse_int_option(optarg))                                \
 
 struct cli_options {
 #define AS_STRUCT_FIELD_FLAG(optChar, name, description) bool name;
@@ -134,6 +139,12 @@ static void printUsage(const char *progname, bool detailed) {
         txvc_print_all_aliases();
         printf("\n");
     }
+}
+
+static int parse_int_option(const char* optArg) {
+    char *p;
+    int res = strtol(optArg, &p, 0);
+    return *optArg == '\0' || *p != '\0' ? INT_MIN : res;
 }
 
 static bool parse_cli_options(int argc, char **argv, struct cli_options *out) {
@@ -245,9 +256,17 @@ int main(int argc, char**argv) {
     if (!opts.serverAddr) {
         opts.serverAddr = DEFAULT_SERVER_ADDR;
     }
+    if (opts.initialTckPeriodNanos < 0) {
+        fprintf(stderr, "Bad initial TCK period\n");
+        return EXIT_FAILURE;
+    }
     const struct txvc_driver *driver = activate_driver(opts.profile);
     if (!driver) {
         return EXIT_FAILURE;
+    }
+    if (opts.initialTckPeriodNanos > 0
+            && driver->set_tck_period(opts.initialTckPeriodNanos) != opts.initialTckPeriodNanos) {
+        WARN("Can't set TCK period to %dns\n", opts.initialTckPeriodNanos);
     }
 
     txvc_run_server(opts.serverAddr, driver, &shouldTerminate);
