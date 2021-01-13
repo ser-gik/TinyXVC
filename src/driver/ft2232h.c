@@ -41,10 +41,6 @@
 
 TXVC_DEFAULT_LOG_TAG(FT2232H);
 
-#define MAX_VECTOR_BITS_PER_ROUND 2048
-static_assert((MAX_VECTOR_BITS_PER_ROUND % 8) == 0, "Max bits must be an integer number of bytes");
-#define MAX_VECTOR_BYTES_PER_ROUND (MAX_VECTOR_BITS_PER_ROUND / 8)
-
 #define PIN_ROLE_LIST_ITEMS(X)                                                                     \
     X("tck", PIN_ROLE_JTAG_TCK, "JTAG TCK signal (clock)")                                         \
     X("tdi", PIN_ROLE_JTAG_TDI, "JTAG TDI signal (test device input)")                             \
@@ -183,10 +179,20 @@ struct driver {
     struct d_masks masks;
     struct ftdi_version_info info;
     struct ftdi_context ctx;
+    int maxOctetsPerRound;
 };
 
 static struct driver gFtdi;
 
+static int get_ftdi_buffer_size(enum ftdi_chip_type chip) {
+    switch (chip) {
+        case TYPE_2232H:
+            return 4096;
+        default:
+            WARN("Unknown chip type: %d, using small buffer size\n", chip);
+            return 256;
+    }
+}
 
 inline static bool is_single_bit_set(uint8_t mask) {
     return !(mask & (mask - 1u));
@@ -236,14 +242,16 @@ inline static bool extract_tdo(const struct d_masks *masks, uint8_t sample) {
 
 static bool do_shift_bits(struct driver *d, int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
-    if (numBits > MAX_VECTOR_BITS_PER_ROUND) {
-        ERROR("Too many bits to transfer: %d (max. supported: %d)\n",
-                numBits, MAX_VECTOR_BITS_PER_ROUND);
+    uint8_t sendBuf[16 * 1024 * 2]; /* Two samples per each bit,
+                                       use buffer sufficiently large for any chip type */
+    uint8_t recvBuf[sizeof(sendBuf)];
+
+    if ((size_t) numBits > sizeof(sendBuf) / 2) {
+        ERROR("Too many bits to transfer: %d (max. supported: %zu)\n",
+                numBits, sizeof(sendBuf) / 2);
         return false;
     }
 
-    uint8_t sendBuf[MAX_VECTOR_BITS_PER_ROUND * 2];
-    uint8_t recvBuf[MAX_VECTOR_BITS_PER_ROUND * 2];
     const struct ft_params *p = &d->params;
 
     const bool tck0 = !(p->tck_idle_level == PIN_LEVEL_HIGH);
@@ -339,6 +347,14 @@ static bool activate(const char **argNames, const char **argValues){
         ftdi_set_bitmode(&d->ctx, directionMask, BITMODE_SYNCBB), bail_reset_mode);
 
 #undef REQUIRE_FTDI_SUCCESS_
+
+    /*
+     * Sync bitbang mode will need two samples per each TCK clock cycle, i.e. two byte samples
+     * to send to MPSSE to imitate one cycle, consequently -
+     * 16 byte samples to transmit eight bits of JTAG stream.
+     * Figure out how many JTAG octets will completely fill internal chip FIFOs with sample bytes.
+     */
+    d->maxOctetsPerRound = get_ftdi_buffer_size(d->ctx.type) / 16;
     return true;
 
 bail_reset_mode:
@@ -360,7 +376,8 @@ static bool deactivate(void){
 }
 
 static int max_vector_bits(void){
-    return MAX_VECTOR_BITS_PER_ROUND;
+    struct driver *d = &gFtdi;
+    return d->maxOctetsPerRound * 8;
 }
 
 static int set_tck_period(int tckPeriodNs){
@@ -376,12 +393,12 @@ static int set_tck_period(int tckPeriodNs){
 static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
     struct driver *d = &gFtdi;
-    for (; numBits > MAX_VECTOR_BITS_PER_ROUND;
-                numBits -= MAX_VECTOR_BITS_PER_ROUND,
-                tmsVector += MAX_VECTOR_BYTES_PER_ROUND,
-                tdiVector += MAX_VECTOR_BYTES_PER_ROUND,
-                tdoVector += MAX_VECTOR_BYTES_PER_ROUND) {
-        if (!do_shift_bits(d, MAX_VECTOR_BITS_PER_ROUND, tmsVector, tdiVector, tdoVector)) {
+    for (; numBits > d->maxOctetsPerRound * 8;
+                numBits -= d->maxOctetsPerRound * 8,
+                tmsVector += d->maxOctetsPerRound,
+                tdiVector += d->maxOctetsPerRound,
+                tdoVector += d->maxOctetsPerRound) {
+        if (!do_shift_bits(d, d->maxOctetsPerRound * 8, tmsVector, tdiVector, tdoVector)) {
             return false;
         }
     }
