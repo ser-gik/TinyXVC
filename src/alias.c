@@ -54,6 +54,48 @@ static const struct {
                 "d6=driver_low,"
                 "d7=driver_low,",
         },
+        },
+        {
+        .name = "mimas_a7_mini",
+        {
+            .description = "Numato Lab Mimas A7 Mini FPGA Development Board",
+            .profile = "ft2232h:"
+                "vid=2a19,"
+                "pid=100E,"
+                "channel=B,"
+                "tck_idle=high,"
+                "tdi_change_at=falling,"
+                "tdo_sample_at=rising,"
+                "d0=tck,"
+                "d1=tdi,"
+                "d2=tdo,"
+                "d3=tms,"
+                "d4=ignored,"
+                "d5=ignored,"
+                "d6=driver_low,"
+                "d7=driver_low,",
+        },
+    },
+    {
+        .name = "narvi",
+        {
+            .description = "Numato Lab Narvi Spartan 7 FPGA Module",
+            .profile = "ft2232h:"
+                "vid=2a19,"
+                "pid=100D,"
+                "channel=B,"
+                "tck_idle=high,"
+                "tdi_change_at=falling,"
+                "tdo_sample_at=rising,"
+                "d0=tck,"
+                "d1=tdi,"
+                "d2=tdo,"
+                "d3=tms,"
+                "d4=ignored,"
+                "d5=ignored,"
+                "d6=driver_low,"
+                "d7=driver_low,",
+        },
     },
 };
 
@@ -67,7 +109,7 @@ const struct txvc_profile_alias *txvc_find_alias_by_name(const char* name) {
 }
 
 void txvc_print_all_aliases(void) {
-    for (size_t i = 0; i < sizeof(gAliases) / sizeof(gAliases[0]); i++) {
+    for (size_t i = 0; i < sizeof(gAliases) / sizeof(gAliases[i]); i++) {
         printf("%s - %s\n", gAliases[i].name, gAliases[i].profile.description);
     }
 }

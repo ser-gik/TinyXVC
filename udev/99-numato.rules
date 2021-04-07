@@ -1,3 +1,6 @@
 # Numato Lab Mimas Artix 7 FPGA Module
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", TAG+="uaccess", GROUP="plugdev"
-
+# Numato Lab Mimas A7 Mini FPGA Development Board
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="100E", TAG+="uaccess", GROUP="plugdev"
+# Numato Lab Narvi Spartan 7 FPGA Module
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="100D", TAG+="uaccess", GROUP="plugdev"
