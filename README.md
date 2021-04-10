@@ -45,3 +45,9 @@ If you're experiencing failures from `ftdi_usb_open()`:
   ```
 - install appropriate udev rules by following instructions from `udev/` and restart PC
 
+## Supported Boards/Existing profiles 
+Boards - Profile
+
+- Numato Lab Mimas A7 FPGA Development Board    - mimas_a7
+- Numato Lab Mimas Mini FPGA Development Board  - mimas_a7_mini
+- Numato Lab Narvi Sparten 7 FPGA Module        - narvi
