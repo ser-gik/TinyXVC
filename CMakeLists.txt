@@ -16,8 +16,10 @@ add_executable(TinyXVC
     src/driver.c
     src/alias.c
     src/server.c
+    src/jtag_splitter.c
     src/driver/echo.c
     src/driver/ft2232h.c
+    src/driver/ftdi-generic.c
     )
 set_property(TARGET TinyXVC PROPERTY C_STANDARD 11)
 set_property(TARGET TinyXVC PROPERTY OUTPUT_NAME txvc)

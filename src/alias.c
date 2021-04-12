@@ -97,6 +97,27 @@ static const struct {
                 "d7=driver_low,",
         },
     },
+    {
+        .name = "c232hm",
+        {
+            .description = "FTDI MPSSE cable with FT232H chip",
+            .profile = "ft2232h:"
+                "vid=0403,"
+                "pid=6014,"
+                "channel=A,"
+                "tck_idle=high,"
+                "tdi_change_at=falling,"
+                "tdo_sample_at=rising,"
+                "d0=tck,"
+                "d1=tdi,"
+                "d2=tdo,"
+                "d3=tms,"
+                "d4=driver_low,"
+                "d5=driver_low,"
+                "d6=driver_low,"
+                "d7=driver_low,",
+        },
+    },
 };
 
 const struct txvc_profile_alias *txvc_find_alias_by_name(const char* name) {

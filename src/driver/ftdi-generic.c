@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Sergey Guralnik
+ * Copyright 2021 Sergey Guralnik
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -25,6 +25,7 @@
  */
 
 #include "driver.h"
+#include "jtag_splitter.h"
 #include "log.h"
 #include "txvc_defs.h"
 
@@ -39,24 +40,12 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-TXVC_DEFAULT_LOG_TAG(FT2232H);
+TXVC_DEFAULT_LOG_TAG(FTDI-GNR);
 
 #define PIN_ROLE_LIST_ITEMS(X)                                                                     \
-    X("tck", PIN_ROLE_JTAG_TCK, "JTAG TCK signal (clock)")                                         \
-    X("tdi", PIN_ROLE_JTAG_TDI, "JTAG TDI signal (test device input)")                             \
-    X("tdo", PIN_ROLE_JTAG_TDO, "JTAG TDO signal (test device output)")                            \
-    X("tms", PIN_ROLE_JTAG_TMS, "JTAG TMS signal (test mode select)")                              \
     X("driver_low", PIN_ROLE_OTHER_DRIVER_LOW, "permanent low level driver")                       \
     X("driver_high", PIN_ROLE_OTHER_DRIVER_HIGH, "permanent high level driver")                    \
     X("ignored", PIN_ROLE_OTHER_IGNORED, "ignored pin, configured as input")                       \
-
-#define CLK_EDGE_LIST_ITEMS(X)                                                                     \
-    X("falling", CLK_EDGE_FALLING, "falling/negative clock transition")                            \
-    X("rising", CLK_EDGE_RISING, "rising/positive clock transition")                               \
-
-#define PIN_LEVEL_LIST_ITEMS(X)                                                                    \
-    X("low", PIN_LEVEL_LOW, "low/zero signal level")                                               \
-    X("high", PIN_LEVEL_HIGH, "high/one signal level")                                             \
 
 #define FTDI_INTERFACE_LIST_ITEMS(X)                                                               \
     X("A", INTERFACE_A, "FTDI' ADBUS channel")                                                     \
@@ -69,16 +58,6 @@ enum pin_role {
     PIN_ROLE_LIST_ITEMS(AS_ENUM_MEMBER)
 };
 
-enum clk_edge {
-    CLK_EDGE_INVALID = 0,
-    CLK_EDGE_LIST_ITEMS(AS_ENUM_MEMBER)
-};
-
-enum pin_level {
-    PIN_LEVEL_INVALID = 0,
-    PIN_LEVEL_LIST_ITEMS(AS_ENUM_MEMBER)
-};
-
 #undef AS_ENUM_MEMBER
 
 #define RETURN_ENUM_IF_NAME_MATCHES(name, enumVal, descr) if (strcmp(name, s) == 0) return enumVal;
@@ -86,16 +65,6 @@ enum pin_level {
 static enum pin_role str_to_pin_role(const char *s) {
     PIN_ROLE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
     return PIN_ROLE_INVALID;
-}
-
-static enum clk_edge str_to_clk_edge(const char *s) {
-    CLK_EDGE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
-    return CLK_EDGE_INVALID;
-}
-
-static enum pin_level str_to_pin_level(const char *s) {
-    PIN_LEVEL_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
-    return PIN_LEVEL_INVALID;
 }
 
 static enum ftdi_interface str_to_ftdi_interface(const char *s) {
@@ -115,9 +84,6 @@ struct ft_params {
     int vid;
     int pid;
     enum ftdi_interface channel;
-    enum pin_level tck_idle_level;
-    enum clk_edge tdi_tms_changing_edge;
-    enum clk_edge tdo_sampling_edge;
     enum pin_role d_pins[8];
 };
 
@@ -125,16 +91,6 @@ struct ft_params {
     X("vid", vid, str_to_usb_id, > 0, "USB device vendor ID")                                      \
     X("pid", pid, str_to_usb_id, > 0, "USB device product ID")                                     \
     X("channel", channel, str_to_ftdi_interface, >= 0, "FTDI channel to use")                      \
-    X("tck_idle", tck_idle_level, str_to_pin_level, != PIN_LEVEL_INVALID,                          \
-        "Level of the TCK signal between transactions")                                            \
-    X("tdi_change_at", tdi_tms_changing_edge, str_to_clk_edge, != CLK_EDGE_INVALID,                \
-        "TCK edge when TDI/TMS values are updated")                                                \
-    X("tdo_sample_at", tdo_sampling_edge, str_to_clk_edge, != CLK_EDGE_INVALID,                    \
-        "TCK edge when TDO value is sampled")                                                      \
-    X("d0", d_pins[0], str_to_pin_role, != PIN_ROLE_INVALID, "D0 pin role")                        \
-    X("d1", d_pins[1], str_to_pin_role, != PIN_ROLE_INVALID, "D1 pin role")                        \
-    X("d2", d_pins[2], str_to_pin_role, != PIN_ROLE_INVALID, "D2 pin role")                        \
-    X("d3", d_pins[3], str_to_pin_role, != PIN_ROLE_INVALID, "D3 pin role")                        \
     X("d4", d_pins[4], str_to_pin_role, != PIN_ROLE_INVALID, "D4 pin role")                        \
     X("d5", d_pins[5], str_to_pin_role, != PIN_ROLE_INVALID, "D5 pin role")                        \
     X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, "D6 pin role")                        \
@@ -165,34 +121,36 @@ static bool load_config(const char **argNames, const char **argValues, struct ft
     return true;
 }
 
-struct d_masks {
-    uint8_t tck;
-    uint8_t tdi;
-    uint8_t tdo;
-    uint8_t tms;
-    uint8_t drivers_high;
-    uint8_t drivers_low;
-};
-
 struct driver {
     struct ft_params params;
-    struct d_masks masks;
-    struct ftdi_version_info info;
     struct ftdi_context ctx;
+
+    struct txvc_jtag_splitter jtagSplitter;
+
     int maxOctetsPerRound;
 };
 
 static struct driver gFtdi;
 
+static bool tmsSenderFn(int numBits, const uint8_t* tms, void* extra) {
+    struct driver* d = extra;
+    TXVC_UNUSED(d);
+    TXVC_UNUSED(numBits);
+    TXVC_UNUSED(tms);
+    WARN("%s: unimplemented stub\n", __func__);
+    return false;
+}
 
-static bool transfer_data(struct ftdi_context *ftdi, const unsigned char *in, unsigned char *out, int size) {
-    struct ftdi_transfer_control *rctl = ftdi_read_data_submit(ftdi, out, size);
-    struct ftdi_transfer_control *wctl = ftdi_write_data_submit(ftdi, (unsigned char *) in, size);
-    if (ftdi_transfer_data_done(wctl) != size || ftdi_transfer_data_done(rctl) != size) {
-        ERROR("Can not transfer %d bytes: %s\n", size, ftdi_get_error_string(ftdi));
-        return false;
-    }
-    return true;
+static bool tdiSenderFn(int numBits, const uint8_t* tdi, uint8_t* tdo, bool lastBitTmsHigh,
+        void* extra) {
+    struct driver* d = extra;
+    TXVC_UNUSED(d);
+    TXVC_UNUSED(numBits);
+    TXVC_UNUSED(tdi);
+    TXVC_UNUSED(tdo);
+    TXVC_UNUSED(lastBitTmsHigh);
+    WARN("%s: unimplemented stub\n", __func__);
+    return false;
 }
 
 static int get_ftdi_buffer_size(enum ftdi_chip_type chip) {
@@ -207,115 +165,57 @@ static int get_ftdi_buffer_size(enum ftdi_chip_type chip) {
     }
 }
 
-inline static bool is_single_bit_set(uint8_t mask) {
-    return !(mask & (mask - 1u));
-}
 
-static bool build_masks(const struct ft_params *params, struct d_masks *out) {
-    memset(out, 0, sizeof(*out));
-    for (size_t i = 0; i < sizeof(params->d_pins) / sizeof(params->d_pins[0]); i++) {
-        switch (params->d_pins[i]) {
-            case PIN_ROLE_JTAG_TCK: out->tck |= 1u << i; break;
-            case PIN_ROLE_JTAG_TDI: out->tdi |= 1u << i; break;
-            case PIN_ROLE_JTAG_TDO: out->tdo |= 1u << i; break;
-            case PIN_ROLE_JTAG_TMS: out->tms |= 1u << i; break;
-            case PIN_ROLE_OTHER_DRIVER_HIGH: out->drivers_high |= 1u << i; break;
-            case PIN_ROLE_OTHER_DRIVER_LOW: out->drivers_low |= 1u << i; break;
-            default: break;
-        }
+static bool do_transfer(struct ftdi_context* ctx,
+        unsigned char* outgoing, int outgoingSz,
+        unsigned char* incoming, int incomingSz) {
+    bool shouldWrite = outgoingSz > 0;
+    bool shouldRead = incomingSz > 0;
+    struct ftdi_transfer_control* wrCtl =
+        shouldWrite ? ftdi_write_data_submit(ctx, outgoing, outgoingSz) : NULL;
+    struct ftdi_transfer_control* rdCtl =
+        shouldRead ? ftdi_read_data_submit(ctx, incoming, incomingSz) : NULL;
+    if (shouldWrite && ftdi_transfer_data_done(wrCtl) != outgoingSz) {
+        ERROR("Failed to write %d bytes: %s\n", outgoingSz, ftdi_get_error_string(ctx));
+        return false;
     }
-
-#define VALIDATE_SINGLE_BIT_MASK(mask)                                                             \
-    do {                                                                                           \
-        if (!is_single_bit_set(out->mask)) {                                                       \
-            ERROR("Missing or multiple \"%s\" is not allowed\n", #mask);                           \
-            return false;                                                                          \
-        }                                                                                          \
-    } while (0)
-    VALIDATE_SINGLE_BIT_MASK(tck);
-    VALIDATE_SINGLE_BIT_MASK(tdi);
-    VALIDATE_SINGLE_BIT_MASK(tdo);
-    VALIDATE_SINGLE_BIT_MASK(tms);
-#undef VALIDATE_SINGLE_BIT_MASK
+    if (shouldRead && ftdi_transfer_data_done(rdCtl) != incomingSz) {
+        ERROR("Failed to read %d bytes: %s\n", incomingSz, ftdi_get_error_string(ctx));
+        return false;
+    }
     return true;
 }
 
-inline static uint8_t build_sample(const struct d_masks *masks, bool tck, bool tdi, bool tms) {
-    uint8_t res = 0u;
-    res |= tck ? masks->tck : 0u;
-    res |= tdi ? masks->tdi : 0u;
-    res |= tms ? masks->tms : 0u;
-    res |= masks->drivers_high;
-    return res;
+static bool ensure_synced(struct ftdi_context* ctx) {
+    unsigned char resp[2];
+    return do_transfer(ctx, (unsigned char[]){ 0xab }, 1, resp, sizeof(resp))
+        && resp[0] == 0xfa && resp[1] == 0xab;
 }
 
-inline static bool extract_tdo(const struct d_masks *masks, uint8_t sample) {
-    return sample & masks->tdo;
+static inline bool do_transfer_wronly(struct ftdi_context* ctx,
+        unsigned char* outgoing, int outgoingSz) {
+    return do_transfer(ctx, outgoing, outgoingSz, NULL, 0);
 }
+
 
 static bool do_shift_bits(struct driver *d, int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
-    uint8_t sendBuf[16 * 1024 * 2]; /* Two samples per each bit,
-                                       use buffer sufficiently large for any chip type */
-    uint8_t recvBuf[sizeof(sendBuf)];
-
-    if ((size_t) numBits > sizeof(sendBuf) / 2) {
-        ERROR("Too many bits to transfer: %d (max. supported: %zu)\n",
-                numBits, sizeof(sendBuf) / 2);
-        return false;
-    }
-
-    const struct ft_params *p = &d->params;
-
-    const bool tck0 = !(p->tck_idle_level == PIN_LEVEL_HIGH);
-    const bool updateTdiTms0 = (p->tdi_tms_changing_edge == CLK_EDGE_FALLING && !tck0)
-                            || (p->tdi_tms_changing_edge == CLK_EDGE_RISING && tck0);
-    bool tmsPrev = 0u;
-    bool tdiPrev = 0u;
-    for (int i = 0; i < numBits; i++) {
-        int byteIdx = i / 8;
-        int bitIdx = i % 8;
-        bool tms = !!(tmsVector[byteIdx] & (1u << bitIdx));
-        bool tdi = !!(tdiVector[byteIdx] & (1u << bitIdx));
-        sendBuf[i * 2 + 0] = build_sample(&d->masks, tck0,
-                updateTdiTms0 ? tdi : tdiPrev,
-                updateTdiTms0 ? tms : tmsPrev);
-        sendBuf[i * 2 + 1] = build_sample(&d->masks, !tck0,
-                tdi,
-                tms);
-        tmsPrev = tms;
-        tdiPrev = tdi;
-    }
-
-    int transferSz = numBits * 2;
-    if (!transfer_data(&d->ctx, sendBuf, recvBuf, transferSz)) {
-        return false;
-    }
-
-    int tdoSampleOffset =
-                (p->tck_idle_level == PIN_LEVEL_HIGH && p->tdo_sampling_edge == CLK_EDGE_FALLING)
-             || (p->tck_idle_level == PIN_LEVEL_LOW && p->tdo_sampling_edge == CLK_EDGE_RISING)
-                    ? 0 : 1;
-    for (int i = 0; i < numBits; i++) {
-        int byteIdx = i / 8;
-        int bitIdx = i % 8;
-        if (extract_tdo(&d->masks, recvBuf[i * 2 + tdoSampleOffset])) {
-            tdoVector[byteIdx] |= 1u << bitIdx;
-        } else {
-            tdoVector[byteIdx] &= ~(1u << bitIdx);
-        }
-    }
-    return true;
+    TXVC_UNUSED(d);
+    TXVC_UNUSED(numBits);
+    TXVC_UNUSED(tmsVector);
+    TXVC_UNUSED(tdiVector);
+    TXVC_UNUSED(tdoVector);
+    ERROR("%s: unimplemented stub\n", __func__);
+    return false;
 }
 
 static bool activate(const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
 
     if (!load_config(argNames, argValues, &d->params)) return false;
-    if (!build_masks(&d->params, &d->masks)) return false;
 
-    d->info = ftdi_get_library_version();
-    INFO("Using libftdi \"%s %s\"\n", d->info.version_str, d->info.snapshot_str);
+    struct ftdi_version_info info = ftdi_get_library_version();
+    INFO("Using libftdi \"%s %s\"\n", info.version_str, info.snapshot_str);
 
 #define REQUIRE_FTDI_SUCCESS_(ftdiCallExpr, cleanupLabel)                                          \
     do {                                                                                           \
@@ -330,26 +230,73 @@ static bool activate(const char **argNames, const char **argValues){
     REQUIRE_FTDI_SUCCESS_(ftdi_set_interface(&d->ctx, d->params.channel), bail_deinit);
     REQUIRE_FTDI_SUCCESS_(
         ftdi_usb_open(&d->ctx, d->params.vid, d->params.pid), bail_deinit);
+    REQUIRE_FTDI_SUCCESS_(ftdi_usb_purge_buffers(&d->ctx) , bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_event_char(&d->ctx, 0, 0) , bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_error_char(&d->ctx, 0, 0) , bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&d->ctx, 1), bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&d->ctx, SIO_DISABLE_FLOW_CTRL), bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_baudrate(&d->ctx, 1000 * 1000 / 16), bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&d->ctx, SIO_RTS_CTS_HS), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET), bail_usb_close);
-    /*
-     * Write idle pattern in all-inputs mode to get correct
-     * pin levels once actual direction mask is  applied
-     */
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_SYNCBB), bail_reset_mode);
-    const uint8_t idlePattern = build_sample(&d->masks,
-            d->params.tck_idle_level == PIN_LEVEL_HIGH, true, true);
-    uint8_t dummy;
-    if (!transfer_data(&d->ctx, &idlePattern, &dummy, 1)) {
-        ERROR("Can't apply idle pattern to channel pins: %s\n", ftdi_get_error_string(&d->ctx));
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_MPSSE), bail_usb_close);
+
+    unsigned char setupCmds[] = {
+        SET_BITS_LOW,
+        0x08, /* Initial levels */
+        0x0b, /* Directions */
+        TCK_DIVISOR,
+        0u, /* Div low */
+        0u, /* Div high */
+        LOOPBACK_START, /* TODO remove after testing */
+    };
+    if (!do_transfer_wronly(&d->ctx, setupCmds, sizeof(setupCmds)) || !ensure_synced(&d->ctx)) {
+        ERROR("Failed to setup device\n");
         goto bail_reset_mode;
     }
-    const uint8_t directionMask = d->masks.tck | d->masks.tdi | d->masks.tms
-                             | d->masks.drivers_high | d->masks.drivers_low;
-    REQUIRE_FTDI_SUCCESS_(
-        ftdi_set_bitmode(&d->ctx, directionMask, BITMODE_SYNCBB), bail_reset_mode);
+
+    unsigned char cmd[] = {
+        /* Push through */
+        MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG,
+        0x03, 0x00,
+        0x0d, 0xdd, 0xf0, 0x0d,
+        /* TMS */
+        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+        0x04,
+        0x80,
+        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+        0x04,
+        0x7f,
+        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+        0x06,
+        0xaa,
+        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+        0x00,
+        0x00,
+        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+        0x00,
+        0x83,
+    };
+    unsigned char resp[1024] = { 0 };
+
+    if (do_transfer(&d->ctx, cmd, sizeof(cmd), resp, 4)) {
+        INFO("response:\n"
+             "%02x, %02x, %02x, %02x\n"
+             "%02x, %02x, %02x, %02x\n"
+             "%02x, %02x, %02x, %02x\n"
+             "%02x, %02x, %02x, %02x\n",
+             resp[0], resp[1], resp[2], resp[3],
+             resp[4], resp[5], resp[6], resp[7],
+             resp[8], resp[9], resp[10], resp[11],
+             resp[12], resp[13], resp[14], resp[15]);
+    }
+
+    ensure_synced(&d->ctx);
+
+    if (!txvc_jtag_splitter_init(&d->jtagSplitter, tmsSenderFn, d, tdiSenderFn, d)) {
+        goto bail_reset_mode;
+    }
+
+    goto bail_reset_mode;
+
+
 
 #undef REQUIRE_FTDI_SUCCESS_
 
@@ -358,6 +305,7 @@ static bool activate(const char **argNames, const char **argValues){
      * to send to MPSSE to imitate one cycle, consequently -
      * 16 byte samples to transmit eight bits of JTAG stream.
      * Figure out how many JTAG octets will completely fill internal chip FIFOs with sample bytes.
+     * TODO revise
      */
     d->maxOctetsPerRound = get_ftdi_buffer_size(d->ctx.type) / 16;
     return true;
@@ -374,6 +322,7 @@ bail_noop:
 
 static bool deactivate(void){
     struct driver *d = &gFtdi;
+    txvc_jtag_splitter_deinit(&d->jtagSplitter);
     ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET);
     ftdi_usb_close(&d->ctx);
     ftdi_deinit(&d->ctx);
@@ -386,6 +335,9 @@ static int max_vector_bits(void){
 }
 
 static int set_tck_period(int tckPeriodNs){
+    /*
+     * TODO Revise this
+     */
     struct driver *d = &gFtdi;
     int baudrate = 2 * (1000 * 1000 * 1000 / tckPeriodNs) / 16;
     int err = ftdi_set_baudrate(&d->ctx, baudrate);
@@ -398,6 +350,15 @@ static int set_tck_period(int tckPeriodNs){
 static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
     struct driver *d = &gFtdi;
+
+
+    txvc_jtag_splitter_process(&d->jtagSplitter,
+            numBits, tmsVector, tdiVector, tdoVector);
+
+
+
+
+
     for (; numBits > d->maxOctetsPerRound * 8;
                 numBits -= d->maxOctetsPerRound * 8,
                 tmsVector += d->maxOctetsPerRound,
@@ -410,10 +371,11 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
     return numBits == 0 || do_shift_bits(d, numBits, tmsVector, tdiVector, tdoVector);
 }
 
-TXVC_DRIVER(ft2232h) = {
-    .name = "ft2232h",
+TXVC_DRIVER(ftdi_generic) = {
+    .name = "ftdi-generic",
     .help =
-        "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
+        "Sends vectors to a device that is connected to JTAG pins of a MPSSE-capable FTDI chip,"
+        " which is connected to this machine USB\n"
         "Parameters:\n"
 #define AS_HELP_STRING(name, configField, converterFunc, validation, descr) \
         "  \"" name "\" - " descr "\n"
@@ -423,10 +385,6 @@ TXVC_DRIVER(ft2232h) = {
         "  \"" name "\" - " descr "\n"
         "Allowed pin roles:\n"
         PIN_ROLE_LIST_ITEMS(AS_HELP_STRING)
-        "Allowed clock edges:\n"
-        CLK_EDGE_LIST_ITEMS(AS_HELP_STRING)
-        "Allowed pin levels:\n"
-        PIN_LEVEL_LIST_ITEMS(AS_HELP_STRING)
         "Allowed FTDI channels:\n"
         FTDI_INTERFACE_LIST_ITEMS(AS_HELP_STRING)
 #undef AS_HELP_STRING
