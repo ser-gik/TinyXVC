@@ -31,4 +31,5 @@
 #define TXVC_USED __attribute__((used))
 #define TXVC_SECTION(name) __attribute__((section(#name)))
 #define TXVC_PRINTF_LIKE(fmtIdx, varargIdx) __attribute__((format(printf, fmtIdx, varargIdx)))
+#define TXVC_UNREACHABLE() __builtin_trap()
 

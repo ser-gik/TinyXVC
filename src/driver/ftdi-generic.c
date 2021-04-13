@@ -29,6 +29,7 @@
 #include "log.h"
 #include "txvc_defs.h"
 
+#include <bits/stdint-uintn.h>
 #include <libftdi1/ftdi.h>
 
 #include <unistd.h>
@@ -124,10 +125,7 @@ static bool load_config(const char **argNames, const char **argValues, struct ft
 struct driver {
     struct ft_params params;
     struct ftdi_context ctx;
-
     struct txvc_jtag_splitter jtagSplitter;
-
-    int maxOctetsPerRound;
 };
 
 static struct driver gFtdi;
@@ -152,19 +150,6 @@ static bool tdiSenderFn(int numBits, const uint8_t* tdi, uint8_t* tdo, bool last
     WARN("%s: unimplemented stub\n", __func__);
     return false;
 }
-
-static int get_ftdi_buffer_size(enum ftdi_chip_type chip) {
-    switch (chip) {
-        case TYPE_2232H:
-            return 4096;
-        case TYPE_232H:
-            return 1024;
-        default:
-            WARN("Unknown chip type: %d, using small buffer size\n", chip);
-            return 256;
-    }
-}
-
 
 static bool do_transfer(struct ftdi_context* ctx,
         unsigned char* outgoing, int outgoingSz,
@@ -198,16 +183,6 @@ static inline bool do_transfer_wronly(struct ftdi_context* ctx,
 }
 
 
-static bool do_shift_bits(struct driver *d, int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
-        uint8_t *tdoVector){
-    TXVC_UNUSED(d);
-    TXVC_UNUSED(numBits);
-    TXVC_UNUSED(tmsVector);
-    TXVC_UNUSED(tdiVector);
-    TXVC_UNUSED(tdoVector);
-    ERROR("%s: unimplemented stub\n", __func__);
-    return false;
-}
 
 static bool activate(const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
@@ -237,6 +212,8 @@ static bool activate(const char **argNames, const char **argValues){
     REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&d->ctx, SIO_RTS_CTS_HS), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_MPSSE), bail_usb_close);
+
+#undef REQUIRE_FTDI_SUCCESS_
 
     unsigned char setupCmds[] = {
         SET_BITS_LOW,
@@ -298,16 +275,7 @@ static bool activate(const char **argNames, const char **argValues){
 
 
 
-#undef REQUIRE_FTDI_SUCCESS_
 
-    /*
-     * Sync bitbang mode will need two samples per each TCK clock cycle, i.e. two byte samples
-     * to send to MPSSE to imitate one cycle, consequently -
-     * 16 byte samples to transmit eight bits of JTAG stream.
-     * Figure out how many JTAG octets will completely fill internal chip FIFOs with sample bytes.
-     * TODO revise
-     */
-    d->maxOctetsPerRound = get_ftdi_buffer_size(d->ctx.type) / 16;
     return true;
 
 bail_reset_mode:
@@ -331,44 +299,55 @@ static bool deactivate(void){
 
 static int max_vector_bits(void){
     struct driver *d = &gFtdi;
-    return d->maxOctetsPerRound * 8;
+    enum ftdi_chip_type type = d->ctx.type;
+    switch (type) {
+        case TYPE_2232H:
+            return 4096 * 8;
+        case TYPE_232H:
+            return 1024 * 8;
+        default:
+            WARN("Unknown chip type: %d, using small buffer size\n", type);
+            return 256 * 8;
+    }
 }
 
 static int set_tck_period(int tckPeriodNs){
     /*
-     * TODO Revise this
+     * Find out needed divider by using official formula from FTDI docs:
+     * TCK/SK period = 12MHz / (( 1 +[(0xValueH * 256) OR 0xValueL] ) * 2)
+     * or, if high speed available:
+     * TCK period = 60MHz / (( 1 +[ (0xValueH * 256) OR 0xValueL] ) * 2)
+     *
+     * Strictly speaking these formulae yield frequency, not a period. 
      */
     struct driver *d = &gFtdi;
-    int baudrate = 2 * (1000 * 1000 * 1000 / tckPeriodNs) / 16;
-    int err = ftdi_set_baudrate(&d->ctx, baudrate);
-    if (err) {
-        ERROR("Can't set TCK period %dns: %d %s\n", tckPeriodNs, err, ftdi_get_error_string(&d->ctx));
+    const bool highSpeed = true; /* TODO set accordingly to current chip type */
+    const int maxFreqMHz = highSpeed ? 30 : 6;
+    int divider = (maxFreqMHz * tckPeriodNs) / 1000 - (!((maxFreqMHz * tckPeriodNs) % 1000));
+    if (divider < 0) {
+        TXVC_UNREACHABLE();
     }
-    return err ? 0 : tckPeriodNs;
+    if (divider > 0xffff) {
+        divider = 0xffff;
+    }
+    int actualPeriodNs = (1 + divider) * 1000 / maxFreqMHz;
+    if (divider == 0) {
+        WARN("Using minimal available period - %dns\n", actualPeriodNs);
+    }
+    if (divider == 0xffff) {
+        WARN("Using maximal available period - %dns\n", actualPeriodNs);
+    }
+    uint8_t cmd[] = { TCK_DIVISOR, divider & 0xff, (divider >> 8) & 0xff, DIS_DIV_5, };
+    if (!do_transfer(&d->ctx, cmd, highSpeed ? 4 : 3, NULL, 0)) {
+        ERROR("Can't set TCK period %dns\n", tckPeriodNs);
+    }
+    return actualPeriodNs;
 }
 
 static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
         uint8_t *tdoVector){
     struct driver *d = &gFtdi;
-
-
-    txvc_jtag_splitter_process(&d->jtagSplitter,
-            numBits, tmsVector, tdiVector, tdoVector);
-
-
-
-
-
-    for (; numBits > d->maxOctetsPerRound * 8;
-                numBits -= d->maxOctetsPerRound * 8,
-                tmsVector += d->maxOctetsPerRound,
-                tdiVector += d->maxOctetsPerRound,
-                tdoVector += d->maxOctetsPerRound) {
-        if (!do_shift_bits(d, d->maxOctetsPerRound * 8, tmsVector, tdiVector, tdoVector)) {
-            return false;
-        }
-    }
-    return numBits == 0 || do_shift_bits(d, numBits, tmsVector, tdiVector, tdoVector);
+    return txvc_jtag_splitter_process(&d->jtagSplitter, numBits, tmsVector, tdiVector, tdoVector);
 }
 
 TXVC_DRIVER(ftdi_generic) = {

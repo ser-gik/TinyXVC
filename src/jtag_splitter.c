@@ -34,8 +34,6 @@
 TXVC_DEFAULT_LOG_TAG(jtag-split);
 
 enum jtag_state {
-    Invalid,
-
     TestLogicReset,
     RunTestIdle,
     SelectDRScan,
@@ -54,6 +52,20 @@ enum jtag_state {
     UpdateIR,
 };
 
+static bool get_bit(const uint8_t* vector, int idx) {
+    return vector[idx / 8] & (1u << (idx % 8));
+}
+
+static void set_bit(uint8_t* vector, int idx, bool bit) {
+    if (bit) vector[idx / 8] |= 1u << (idx % 8);
+    else vector[idx / 8] &= ~(1u << (idx % 8));
+}
+
+static void copy_bits(const uint8_t* src, int srcIdx, uint8_t* dst, int dstIdx, int numBits) {
+    for (int i = 0; i < numBits; i++) {
+        set_bit(dst, dstIdx++, get_bit(src, srcIdx++));
+    }
+}
 
 static bool tapReset(txvc_jtag_splitter_tms_sender_fn tmsSender, void* tmsSenderExtra) {
     const uint8_t tmsTapResetVector = 0x1f;
@@ -61,49 +73,27 @@ static bool tapReset(txvc_jtag_splitter_tms_sender_fn tmsSender, void* tmsSender
     return tmsSender(tmsTapResetVectorLen, &tmsTapResetVector, tmsSenderExtra);
 }
 
-TXVC_USED
 static enum jtag_state next_state(enum jtag_state curState, bool tmsHigh) {
-    if (tmsHigh) {
-        switch (curState) {
-            case TestLogicReset: return Invalid;
-            case RunTestIdle: return Invalid;
-            case SelectDRScan: return Invalid;
-            case CaptureDR: return Invalid;
-            case ShiftDR: return Invalid;
-            case Exit1DR: return Invalid;
-            case PauseDR: return Invalid;
-            case Exit2DR: return Invalid;
-            case UpdateDR: return Invalid;
-            case SelectIRScan: return Invalid;
-            case CaptureIR: return Invalid;
-            case ShiftIR: return Invalid;
-            case Exit1IR: return Invalid;
-            case PauseIR: return Invalid;
-            case Exit2IR: return Invalid;
-            case UpdateIR: return Invalid;
-        }
-    } else {
-        switch (curState) {
-            case TestLogicReset: return Invalid;
-            case RunTestIdle: return Invalid;
-            case SelectDRScan: return Invalid;
-            case CaptureDR: return Invalid;
-            case ShiftDR: return Invalid;
-            case Exit1DR: return Invalid;
-            case PauseDR: return Invalid;
-            case Exit2DR: return Invalid;
-            case UpdateDR: return Invalid;
-            case SelectIRScan: return Invalid;
-            case CaptureIR: return Invalid;
-            case ShiftIR: return Invalid;
-            case Exit1IR: return Invalid;
-            case PauseIR: return Invalid;
-            case Exit2IR: return Invalid;
-            case UpdateIR: return Invalid;
-        }
+    switch (curState) {
+        case TestLogicReset: return tmsHigh ? TestLogicReset : RunTestIdle;
+        case RunTestIdle: return tmsHigh ? SelectDRScan : RunTestIdle;
+        case SelectDRScan: return tmsHigh ? SelectIRScan : CaptureDR;
+        case CaptureDR: return tmsHigh ? Exit1DR : ShiftDR;
+        case ShiftDR: return tmsHigh ? Exit1DR : ShiftDR;
+        case Exit1DR: return tmsHigh ? UpdateDR : PauseDR;
+        case PauseDR: return tmsHigh ? Exit2DR : PauseDR;
+        case Exit2DR: return tmsHigh ? UpdateDR : ShiftDR;
+        case UpdateDR: return tmsHigh ? SelectDRScan : RunTestIdle;
+        case SelectIRScan: return tmsHigh ? TestLogicReset : CaptureIR;
+        case CaptureIR: return tmsHigh ? Exit1IR : ShiftIR;
+        case ShiftIR: return tmsHigh ? Exit1IR : ShiftIR;
+        case Exit1IR: return tmsHigh ? UpdateIR : PauseIR;
+        case PauseIR: return tmsHigh ? Exit2IR : PauseIR;
+        case Exit2IR: return tmsHigh ? UpdateIR : ShiftIR;
+        case UpdateIR: return tmsHigh ? SelectDRScan : RunTestIdle;
     }
+    TXVC_UNREACHABLE();
 }
-
 
 bool txvc_jtag_splitter_init(struct txvc_jtag_splitter* splitter,
         txvc_jtag_splitter_tms_sender_fn tmsSender, void* tmsSenderExtra,
@@ -131,50 +121,55 @@ bool txvc_jtag_splitter_deinit(struct txvc_jtag_splitter* splitter) {
 
 bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
         int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo) {
-    TXVC_UNUSED(splitter);
-    TXVC_UNUSED(numBits);
-    TXVC_UNUSED(tms);
-    TXVC_UNUSED(tdi);
-    TXVC_UNUSED(tdo);
+    uint8_t vector[16];
+    const int maxVectorBits = sizeof(vector) * 8;
+    int vectorBits = 0;
 
-    WARN("%s: unimplemented stub\n", __func__);
+    enum jtag_state curState = splitter->state;
 
     for (int i = 0; i < numBits; i++) {
-        const int byteIdx = i / 8;
-        const int bitIdx = i % 8;
-        const bool tmsBit = tms[byteIdx] & (1u << bitIdx);
-        const bool tdiBit = tdi[byteIdx] & (1u << bitIdx);
-        const enum jtag_state curState = splitter->state;
+        const bool tmsBit = get_bit(tms, i);
+        const bool tdiBit = get_bit(tdi, i);
+        set_bit(tdo, i, false);
         const enum jtag_state nextState = next_state(curState, tmsBit);
 
+        const bool inShift = curState == ShiftDR || curState == ShiftIR;
 
+        set_bit(vector, vectorBits++, inShift ? tdiBit : tmsBit);
 
+        const bool enteringShift = !inShift && (nextState == ShiftDR || nextState == ShiftIR);
+        const bool exitingShift = inShift && (nextState != ShiftDR && nextState != ShiftIR);
 
+        const bool flush = i == numBits - 1
+            || vectorBits == maxVectorBits
+            || enteringShift
+            || exitingShift;
 
+        if (flush) {
+            if (inShift) {
+                uint8_t tdoVector[sizeof(vector)];
+                if (!splitter->tdiSender(vectorBits, vector, tdoVector, tmsBit,
+                            splitter->tdiSenderExtra)) {
+                    goto bail_reset;
+                }
+                copy_bits(tdoVector, 0, tdo, i - vectorBits + 1, vectorBits);
+            } else {
+                if (!splitter->tmsSender(vectorBits, vector, splitter->tmsSenderExtra)) {
+                    goto bail_reset;
+                }
+            }
+            vectorBits = 0;
+        }
 
-
-
-
-
-
-
-
-        splitter->state = nextState;
-
+        curState = nextState;
     }
+    splitter->state = curState;
+    return true;
 
-
-
-
-
-
-
-
-
+bail_reset:
+    WARN("Resetting TAP\n");
+    tapReset(splitter->tmsSender, splitter->tmsSenderExtra);
+    splitter->state = TestLogicReset;
     return false;
 }
-
-
-
-
 
