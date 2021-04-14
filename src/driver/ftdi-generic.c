@@ -126,34 +126,16 @@ struct driver {
     struct ft_params params;
     struct ftdi_context ctx;
     struct txvc_jtag_splitter jtagSplitter;
+    int chipBufferSz;
+    unsigned lastTdi : 1;
+    unsigned lastTms : 1;
 };
 
 static struct driver gFtdi;
 
-static bool tmsSenderFn(int numBits, const uint8_t* tms, void* extra) {
-    struct driver* d = extra;
-    TXVC_UNUSED(d);
-    TXVC_UNUSED(numBits);
-    TXVC_UNUSED(tms);
-    WARN("%s: unimplemented stub\n", __func__);
-    return false;
-}
-
-static bool tdiSenderFn(int numBits, const uint8_t* tdi, uint8_t* tdo, bool lastBitTmsHigh,
-        void* extra) {
-    struct driver* d = extra;
-    TXVC_UNUSED(d);
-    TXVC_UNUSED(numBits);
-    TXVC_UNUSED(tdi);
-    TXVC_UNUSED(tdo);
-    TXVC_UNUSED(lastBitTmsHigh);
-    WARN("%s: unimplemented stub\n", __func__);
-    return false;
-}
-
 static bool do_transfer(struct ftdi_context* ctx,
-        unsigned char* outgoing, int outgoingSz,
-        unsigned char* incoming, int incomingSz) {
+        uint8_t* outgoing, int outgoingSz,
+        uint8_t* incoming, int incomingSz) {
     bool shouldWrite = outgoingSz > 0;
     bool shouldRead = incomingSz > 0;
     struct ftdi_transfer_control* wrCtl =
@@ -172,17 +154,99 @@ static bool do_transfer(struct ftdi_context* ctx,
 }
 
 static bool ensure_synced(struct ftdi_context* ctx) {
+    /* Send bad opcode and check that chip responds with "BadCommand" */
     unsigned char resp[2];
     return do_transfer(ctx, (unsigned char[]){ 0xab }, 1, resp, sizeof(resp))
         && resp[0] == 0xfa && resp[1] == 0xab;
 }
 
-static inline bool do_transfer_wronly(struct ftdi_context* ctx,
-        unsigned char* outgoing, int outgoingSz) {
-    return do_transfer(ctx, outgoing, outgoingSz, NULL, 0);
+static bool tmsSenderFn(int numBits, const uint8_t* tms, void* extra) {
+    struct driver* d = extra;
+    for (;;) {
+        /* 
+         * TMS traffic is moderate, no need to use huge batches.
+         * Load no more than 4 bits per each command, so that 2 commands could cover up to one input
+         * byte and loop could conveniently iterate with no crossing input byte boundaries.
+         */
+        uint8_t cmd[] = {
+            MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+            numBits > 4 ? 0x03 : numBits - 1,
+            (d->lastTdi << 7) | ((*tms >> 0) & 0x0f),
+            MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
+            numBits > 8 ? 0x03 : numBits - 1 - 4,
+            (d->lastTdi << 7) | ((*tms >> 4) & 0x0f),
+        };
+        if (!do_transfer(&d->ctx, cmd, numBits > 4 ? 6 : 3, NULL, 0) || !ensure_synced(&d->ctx)) {
+            return false;
+        }
+        if (numBits > 8) {
+            numBits -= 8;
+            tms++;
+        } else {
+            d->lastTms = *tms & (1 << (numBits - 1));
+            break;
+        }
+    }
+    return true;
 }
 
+static bool tdiSenderFn(int numBits, const uint8_t* tdi, uint8_t* tdo, bool lastBitTmsHigh,
+        void* extra) {
+    struct driver* d = extra;
+    const int regularBitsToSend = numBits - 1; /* Last bit is sent via TMS write command */
+    const int wholeBytesToSend = regularBitsToSend > 0 ? regularBitsToSend / 8 : 0;
+    const int trailerBitsToSend = regularBitsToSend > 0 ? regularBitsToSend % 8 : 0;
 
+    for (int remainingWholeBytes = wholeBytesToSend; remainingWholeBytes > 0;) {
+        const int batchPrefixSz = 3; /* Command opcode plus following payload length fields */
+        const int maxBatchPayloadSz = d->chipBufferSz - batchPrefixSz;
+        const int thisBatchPayloadSz = remainingWholeBytes > maxBatchPayloadSz ? maxBatchPayloadSz
+                                                                           : remainingWholeBytes;
+        uint8_t out[64 * 1024 + 3];
+        out[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG;
+        out[1] = ((thisBatchPayloadSz - 1) >>  0) & 0xff;
+        out[2] = ((thisBatchPayloadSz - 1) >>  16) & 0xff;
+        memcpy(out + 3, tdi, thisBatchPayloadSz);
+        if (!do_transfer(&d->ctx, out, batchPrefixSz + thisBatchPayloadSz, tdo, thisBatchPayloadSz)
+                || !ensure_synced(&d->ctx)) {
+            return false;
+        }
+        tdi += thisBatchPayloadSz;
+        tdo += thisBatchPayloadSz;
+        remainingWholeBytes -= thisBatchPayloadSz;
+    }
+
+    if (trailerBitsToSend > 0) {
+        uint8_t trailerBitsSendCmd[] = {
+            MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG,
+            trailerBitsToSend - 1,
+            *tdi,
+        };
+        uint8_t trailerTdoBits;
+        if (!do_transfer(&d->ctx, trailerBitsSendCmd, sizeof(trailerBitsSendCmd),
+                    &trailerTdoBits, 1) || !ensure_synced(&d->ctx)) {
+            return false;
+        }
+        *tdo = trailerTdoBits >> (8 - trailerBitsToSend);
+    }
+
+    uint8_t lastTdiBit = !!(*tdi & (1 << trailerBitsToSend));
+    uint8_t lastBitSendCmd[] = {
+        MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE,
+        0x00,
+        lastTdiBit << 7 | !!lastBitTmsHigh,
+    };
+    uint8_t lastTdoBit;
+    if (!do_transfer(&d->ctx, lastBitSendCmd, sizeof(lastBitSendCmd),
+                &lastTdoBit, 1) || !ensure_synced(&d->ctx)) {
+        return false;
+    }
+    if (lastTdoBit & 0x80u) *tdo |= 1u << trailerBitsToSend;
+    else *tdo &= ~(1u << trailerBitsToSend);
+    d->lastTdi = lastTdiBit;
+    d->lastTms = lastBitTmsHigh;
+    return true;
+}
 
 static bool activate(const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
@@ -215,67 +279,36 @@ static bool activate(const char **argNames, const char **argValues){
 
 #undef REQUIRE_FTDI_SUCCESS_
 
-    unsigned char setupCmds[] = {
+    uint8_t setupCmds[] = {
         SET_BITS_LOW,
-        0x08, /* Initial levels */
-        0x0b, /* Directions */
+        0x08, /* Initial levels: TCK=0, TDI=0, TMS=1 */
+        0x0b, /* Directions: TCK=out, TDI=out, TDO=in, TMS=out */
         TCK_DIVISOR,
-        0u, /* Div low */
-        0u, /* Div high */
-        LOOPBACK_START, /* TODO remove after testing */
+        0x05, /* Initialize to 1 MHz clock */
+        0x00,
     };
-    if (!do_transfer_wronly(&d->ctx, setupCmds, sizeof(setupCmds)) || !ensure_synced(&d->ctx)) {
+    if (!do_transfer(&d->ctx, setupCmds, sizeof(setupCmds), NULL, 0) || !ensure_synced(&d->ctx)) {
         ERROR("Failed to setup device\n");
         goto bail_reset_mode;
     }
-
-    unsigned char cmd[] = {
-        /* Push through */
-        MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG,
-        0x03, 0x00,
-        0x0d, 0xdd, 0xf0, 0x0d,
-        /* TMS */
-        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-        0x04,
-        0x80,
-        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-        0x04,
-        0x7f,
-        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-        0x06,
-        0xaa,
-        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-        0x00,
-        0x00,
-        MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-        0x00,
-        0x83,
-    };
-    unsigned char resp[1024] = { 0 };
-
-    if (do_transfer(&d->ctx, cmd, sizeof(cmd), resp, 4)) {
-        INFO("response:\n"
-             "%02x, %02x, %02x, %02x\n"
-             "%02x, %02x, %02x, %02x\n"
-             "%02x, %02x, %02x, %02x\n"
-             "%02x, %02x, %02x, %02x\n",
-             resp[0], resp[1], resp[2], resp[3],
-             resp[4], resp[5], resp[6], resp[7],
-             resp[8], resp[9], resp[10], resp[11],
-             resp[12], resp[13], resp[14], resp[15]);
-    }
-
-    ensure_synced(&d->ctx);
+    d->lastTdi = 0;
+    d->lastTms = 1;
 
     if (!txvc_jtag_splitter_init(&d->jtagSplitter, tmsSenderFn, d, tdiSenderFn, d)) {
         goto bail_reset_mode;
     }
 
-    goto bail_reset_mode;
-
-
-
-
+    switch (d->ctx.type) {
+        case TYPE_2232H:
+            d->chipBufferSz = 4096;
+            break;
+        case TYPE_232H:
+            d->chipBufferSz = 1024;
+            break;
+        default:
+            ERROR("Unknown chip type: %d\n", d->ctx.type);
+            goto bail_reset_mode;
+    }
     return true;
 
 bail_reset_mode:
@@ -299,16 +332,7 @@ static bool deactivate(void){
 
 static int max_vector_bits(void){
     struct driver *d = &gFtdi;
-    enum ftdi_chip_type type = d->ctx.type;
-    switch (type) {
-        case TYPE_2232H:
-            return 4096 * 8;
-        case TYPE_232H:
-            return 1024 * 8;
-        default:
-            WARN("Unknown chip type: %d, using small buffer size\n", type);
-            return 256 * 8;
-    }
+    return d->chipBufferSz * 8;
 }
 
 static int set_tck_period(int tckPeriodNs){
@@ -317,12 +341,12 @@ static int set_tck_period(int tckPeriodNs){
      * TCK/SK period = 12MHz / (( 1 +[(0xValueH * 256) OR 0xValueL] ) * 2)
      * or, if high speed available:
      * TCK period = 60MHz / (( 1 +[ (0xValueH * 256) OR 0xValueL] ) * 2)
-     *
      * Strictly speaking these formulae yield frequency, not a period. 
      */
     struct driver *d = &gFtdi;
     const bool highSpeed = true; /* TODO set accordingly to current chip type */
     const int maxFreqMHz = highSpeed ? 30 : 6;
+    /* Use nearest greater period if there is no exact match */
     int divider = (maxFreqMHz * tckPeriodNs) / 1000 - (!((maxFreqMHz * tckPeriodNs) % 1000));
     if (divider < 0) {
         TXVC_UNREACHABLE();
@@ -338,7 +362,7 @@ static int set_tck_period(int tckPeriodNs){
         WARN("Using maximal available period - %dns\n", actualPeriodNs);
     }
     uint8_t cmd[] = { TCK_DIVISOR, divider & 0xff, (divider >> 8) & 0xff, DIS_DIV_5, };
-    if (!do_transfer(&d->ctx, cmd, highSpeed ? 4 : 3, NULL, 0)) {
+    if (!do_transfer(&d->ctx, cmd, highSpeed ? 4 : 3, NULL, 0) || !ensure_synced(&d->ctx)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
     }
     return actualPeriodNs;
