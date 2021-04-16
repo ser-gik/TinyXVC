@@ -133,6 +133,33 @@ struct driver {
 
 static struct driver gFtdi;
 
+static uint8_t buildTmsPayload(uint8_t tmsBits, int numBits, bool tdiLevel) {
+    uint8_t ret;
+    switch (numBits) {
+        case 1:
+            ret = ((tmsBits & 0x01) << 1) | (tmsBits & 0x01);
+            break;
+        case 2:
+            ret = ((tmsBits & 0x02) << 1) | (tmsBits & 0x03);
+            break;
+        case 3:
+            ret = ((tmsBits & 0x04) << 1) | (tmsBits & 0x07);
+            break;
+        case 4:
+            ret = ((tmsBits & 0x08) << 1) | (tmsBits & 0x0f);
+            break;
+        case 5:
+            ret = ((tmsBits & 0x10) << 1) | (tmsBits & 0x1f);
+            break;
+        case 6:
+            ret = ((tmsBits & 0x20) << 1) | (tmsBits & 0x3f);
+            break;
+        default:
+            TXVC_UNREACHABLE();
+    }
+    return (!!tdiLevel << 7) | ret; 
+}
+
 static bool do_transfer(struct ftdi_context* ctx,
         uint8_t* outgoing, int outgoingSz,
         uint8_t* incoming, int incomingSz) {
@@ -171,10 +198,10 @@ static bool tmsSenderFn(int numBits, const uint8_t* tms, void* extra) {
         uint8_t cmd[] = {
             MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
             numBits > 4 ? 0x03 : numBits - 1,
-            (d->lastTdi << 7) | ((*tms >> 0) & 0x0f),
+            buildTmsPayload(*tms, numBits > 4 ? 4 : numBits, d->lastTdi),
             MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
             numBits > 8 ? 0x03 : numBits - 1 - 4,
-            (d->lastTdi << 7) | ((*tms >> 4) & 0x0f),
+            buildTmsPayload(*tms >> 4, numBits > 8 || numBits < 5 ? 4 : numBits - 4, d->lastTdi),
         };
         if (!do_transfer(&d->ctx, cmd, numBits > 4 ? 6 : 3, NULL, 0) || !ensure_synced(&d->ctx)) {
             return false;
@@ -234,7 +261,7 @@ static bool tdiSenderFn(int numBits, const uint8_t* tdi, uint8_t* tdo, bool last
     uint8_t lastBitSendCmd[] = {
         MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE,
         0x00,
-        lastTdiBit << 7 | !!lastBitTmsHigh,
+        buildTmsPayload(!!lastBitTmsHigh, 1, lastTdiBit),
     };
     uint8_t lastTdoBit;
     if (!do_transfer(&d->ctx, lastBitSendCmd, sizeof(lastBitSendCmd),
