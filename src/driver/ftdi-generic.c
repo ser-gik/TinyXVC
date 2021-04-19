@@ -29,19 +29,17 @@
 #include "log.h"
 #include "txvc_defs.h"
 
-#include <bits/stdint-uintn.h>
 #include <libftdi1/ftdi.h>
 
 #include <unistd.h>
 
-#include <assert.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
 
-TXVC_DEFAULT_LOG_TAG(FTDI-GNR);
+TXVC_DEFAULT_LOG_TAG(ftdi-generic);
 
 #define PIN_ROLE_LIST_ITEMS(X)                                                                     \
     X("driver_low", PIN_ROLE_OTHER_DRIVER_LOW, "permanent low level driver")                       \
@@ -128,56 +126,89 @@ struct driver {
     struct txvc_jtag_splitter jtagSplitter;
     int chipBufferSz;
     unsigned lastTdi : 1;
-    unsigned lastTms : 1;
 };
 
 static struct driver gFtdi;
 
-static uint8_t buildTmsPayload(uint8_t tmsBits, int numBits, bool tdiLevel) {
-    uint8_t ret;
-    switch (numBits) {
-        case 1:
-            ret = ((tmsBits & 0x01) << 1) | (tmsBits & 0x01);
-            break;
-        case 2:
-            ret = ((tmsBits & 0x02) << 1) | (tmsBits & 0x03);
-            break;
-        case 3:
-            ret = ((tmsBits & 0x04) << 1) | (tmsBits & 0x07);
-            break;
-        case 4:
-            ret = ((tmsBits & 0x08) << 1) | (tmsBits & 0x0f);
-            break;
-        case 5:
-            ret = ((tmsBits & 0x10) << 1) | (tmsBits & 0x1f);
-            break;
-        case 6:
-            ret = ((tmsBits & 0x20) << 1) | (tmsBits & 0x3f);
-            break;
-        default:
-            TXVC_UNREACHABLE();
+
+struct readonly_granule {
+    const uint8_t* data;
+    int size;
+};
+
+struct granule {
+    uint8_t* data;
+    int size;
+};
+
+static bool do_transfer_granular(struct ftdi_context* ctx,
+        const struct readonly_granule* outgoingGranules, int numOutgoingGranules,
+        const struct granule* incomingGranules, int numIncomingGranules) {
+    for (int i = 0; i < numOutgoingGranules; i++) {
+        const struct readonly_granule* g = outgoingGranules + i;
+        if (g->size > 0) {
+            struct ftdi_transfer_control* ctl = ftdi_write_data_submit(ctx,
+                    (uint8_t*)g->data, g->size);
+            if (!ctl) {
+                ERROR("Failed to send data: %s\n", ftdi_get_error_string(ctx));
+                return false;
+            }
+            int sz = ftdi_transfer_data_done(ctl);
+            if (sz != g->size) {
+                ERROR("Failed to send data: %s (res: %d)\n", ftdi_get_error_string(ctx), sz);
+                return false;
+            }
+        }
     }
-    return (!!tdiLevel << 7) | ret; 
+    for (int i = 0; i < numIncomingGranules; i++) {
+        const struct granule* g = incomingGranules + i;
+        if (g->size > 0) {
+            struct ftdi_transfer_control* ctl = ftdi_read_data_submit(ctx,
+                    g->data, g->size);
+            if (!ctl) {
+                ERROR("Failed to receive data: %s\n", ftdi_get_error_string(ctx));
+                return false;
+            }
+            int sz = ftdi_transfer_data_done(ctl);
+            if (sz != g->size) {
+                ERROR("Failed to receive data: %s (res: %d)\n", ftdi_get_error_string(ctx), sz);
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 static bool do_transfer(struct ftdi_context* ctx,
-        uint8_t* outgoing, int outgoingSz,
+        const uint8_t* outgoing, int outgoingSz,
         uint8_t* incoming, int incomingSz) {
-    bool shouldWrite = outgoingSz > 0;
-    bool shouldRead = incomingSz > 0;
-    struct ftdi_transfer_control* wrCtl =
-        shouldWrite ? ftdi_write_data_submit(ctx, outgoing, outgoingSz) : NULL;
-    struct ftdi_transfer_control* rdCtl =
-        shouldRead ? ftdi_read_data_submit(ctx, incoming, incomingSz) : NULL;
-    if (shouldWrite && ftdi_transfer_data_done(wrCtl) != outgoingSz) {
-        ERROR("Failed to write %d bytes: %s\n", outgoingSz, ftdi_get_error_string(ctx));
-        return false;
+    const struct readonly_granule out = { .data = outgoing, .size = outgoingSz, };
+    const struct granule in = { .data = incoming, .size = incomingSz, };
+    return do_transfer_granular(ctx, &out, 1, &in, 1);
+}
+
+static inline int min(int a, int b) {
+    return a < b ? a : b;
+}
+
+static inline bool get_bit(const uint8_t* p, int idx) {
+    return !!(p[idx / 8] & (1 << (idx % 8)));
+}
+
+static inline void set_bit(uint8_t* p, int idx, bool bit) {
+    uint8_t* octet = p + idx / 8;
+    if (bit) *octet |= 1 << (idx % 8);
+    else *octet &= ~(1 << (idx % 8));
+}
+
+static void copy_bits(const uint8_t* src, int fromIdx,
+        uint8_t* dst, int toIdx, int numBits, bool duplicateLastBit) {
+    for (int i = 0; i < numBits; i++) {
+        set_bit(dst, toIdx++, get_bit(src, fromIdx++));
     }
-    if (shouldRead && ftdi_transfer_data_done(rdCtl) != incomingSz) {
-        ERROR("Failed to read %d bytes: %s\n", incomingSz, ftdi_get_error_string(ctx));
-        return false;
+    if (duplicateLastBit) {
+        set_bit(dst, toIdx, get_bit(src, fromIdx - 1));
     }
-    return true;
 }
 
 static bool ensure_synced(struct ftdi_context* ctx) {
@@ -187,91 +218,160 @@ static bool ensure_synced(struct ftdi_context* ctx) {
         && resp[0] == 0xfa && resp[1] == 0xab;
 }
 
-static bool tmsSenderFn(int numBits, const uint8_t* tms, void* extra) {
+static bool tmsSenderFn(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* extra) {
+    ALWAYS_ASSERT(fromBitIdx >= 0);
+    ALWAYS_ASSERT(toBitIdx >= 0);
+    ALWAYS_ASSERT(toBitIdx > fromBitIdx);
+
     struct driver* d = extra;
-    for (;;) {
-        /* 
-         * TMS traffic is moderate, no need to use huge batches.
-         * Load no more than 4 bits per each command, so that 2 commands could cover up to one input
-         * byte and loop could conveniently iterate with no crossing input byte boundaries.
-         */
-        uint8_t cmd[] = {
+    while (fromBitIdx < toBitIdx) {
+        const int bitsToTransfer = min(toBitIdx - fromBitIdx, 6);
+        uint8_t pattern = (!!d->lastTdi) << 7;
+        copy_bits(tms, fromBitIdx, &pattern, 0, bitsToTransfer, true);
+        const uint8_t cmd[] = {
             MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-            numBits > 4 ? 0x03 : numBits - 1,
-            buildTmsPayload(*tms, numBits > 4 ? 4 : numBits, d->lastTdi),
-            MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-            numBits > 8 ? 0x03 : numBits - 1 - 4,
-            buildTmsPayload(*tms >> 4, numBits > 8 || numBits < 5 ? 4 : numBits - 4, d->lastTdi),
+            bitsToTransfer - 1,
+            pattern,
         };
-        if (!do_transfer(&d->ctx, cmd, numBits > 4 ? 6 : 3, NULL, 0) || !ensure_synced(&d->ctx)) {
+        if (!do_transfer(&d->ctx, cmd, sizeof(cmd), NULL, 0) || !ensure_synced(&d->ctx)) {
             return false;
         }
-        if (numBits > 8) {
-            numBits -= 8;
-            tms++;
-        } else {
-            d->lastTms = *tms & (1 << (numBits - 1));
-            break;
-        }
+        fromBitIdx += bitsToTransfer;
     }
     return true;
 }
 
-static bool tdiSenderFn(int numBits, const uint8_t* tdi, uint8_t* tdo, bool lastBitTmsHigh,
-        void* extra) {
+static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx,
+        bool lastTmsBitHigh, void* extra) {
+    ALWAYS_ASSERT(fromBitIdx >= 0);
+    ALWAYS_ASSERT(toBitIdx >= 0);
+    ALWAYS_ASSERT(toBitIdx > fromBitIdx);
+
     struct driver* d = extra;
-    const int regularBitsToSend = numBits - 1; /* Last bit is sent via TMS write command */
-    const int wholeBytesToSend = regularBitsToSend > 0 ? regularBitsToSend / 8 : 0;
-    const int trailerBitsToSend = regularBitsToSend > 0 ? regularBitsToSend % 8 : 0;
+    /* Last is special because it is always sent separately via TMS command, ignore it for now. */
+    const int lastBitIdx = toBitIdx - 1;
+    /* Determine right boundaries of the first and last stream octets */
+    const int firstOctetEnd = fromBitIdx + (8 - fromBitIdx % 8);
+    const int lastOctetEnd = lastBitIdx + (lastBitIdx % 8 ? (8 - lastBitIdx % 8) : 0);
+    const int lastOctetStart = lastOctetEnd - 8;
+    const bool allInOneOctet = firstOctetEnd == lastOctetEnd;
+    const int numLeadingBits = allInOneOctet ? lastBitIdx - fromBitIdx : firstOctetEnd - fromBitIdx;
+    const int numTrailingBits = allInOneOctet ? 0 : lastBitIdx - lastOctetStart;
 
-    for (int remainingWholeBytes = wholeBytesToSend; remainingWholeBytes > 0;) {
-        const int batchPrefixSz = 3; /* Command opcode plus following payload length fields */
-        const int maxBatchPayloadSz = d->chipBufferSz - batchPrefixSz;
-        const int thisBatchPayloadSz = remainingWholeBytes > maxBatchPayloadSz ? maxBatchPayloadSz
-                                                                           : remainingWholeBytes;
-        uint8_t out[64 * 1024 + 3];
-        out[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG;
-        out[1] = ((thisBatchPayloadSz - 1) >>  0) & 0xff;
-        out[2] = ((thisBatchPayloadSz - 1) >>  16) & 0xff;
-        memcpy(out + 3, tdi, thisBatchPayloadSz);
-        if (!do_transfer(&d->ctx, out, batchPrefixSz + thisBatchPayloadSz, tdo, thisBatchPayloadSz)
-                || !ensure_synced(&d->ctx)) {
+    /*
+     * Find out maximal amount of whole bytes for a one round such that there is always
+     * a bit of extra space for leading, trailing and last bit commands.
+     * This just simplifies a loop below.
+     */
+    const int maxIntermOctetsPerTransfer = d->chipBufferSz
+        - 3 /* Command for sending heading bits */
+        - 3 /* Command for sending middle bytes w/o payload */
+        - 3 /* Command for sending trailing bits except for the last one */
+        - 3 /* Command for sending the last trailing bit along with TMS bit */
+        ;
+
+    for (int curIdx = fromBitIdx; curIdx < toBitIdx;) {
+        uint8_t leadingBitsCmd[3], intermBitsCmdHeader[3], trailingBitsCmd[3], lastBitCmd[3]; 
+        uint8_t leadingTdoBits, trailingTdoBits, lastTdoBit;
+        bool withLeading = false, withTrailing = false, withLast = false;
+        struct readonly_granule out[5];
+        struct granule in[4];
+        int numOutGranules = 0;
+        int numInGranules = 0;
+
+        if (curIdx == fromBitIdx) {
+            withLeading = true;
+            leadingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
+                                        | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+            leadingBitsCmd[1] = numLeadingBits - 1;
+            leadingBitsCmd[2] = tdi[0] >> (8 - numLeadingBits);
+            out[numOutGranules++] = (struct readonly_granule){
+                .data = leadingBitsCmd,
+                .size = 3,
+            };
+            in[numInGranules++] = (struct granule){
+                .data = &leadingTdoBits, 
+                .size = 1,
+            };
+            curIdx += numLeadingBits;
+        }
+        if (curIdx < lastBitIdx) {
+            if (curIdx < lastOctetStart) {
+                ALWAYS_ASSERT(curIdx % 8 == 0);
+                const int intermOctetsToSend =
+                    min((lastOctetStart - curIdx) / 8, maxIntermOctetsPerTransfer);
+                intermBitsCmdHeader[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
+                                                | MPSSE_WRITE_NEG;
+                intermBitsCmdHeader[1] = ((intermOctetsToSend - 1) >>  0) & 0xff;
+                intermBitsCmdHeader[2] = ((intermOctetsToSend - 1) >> 16) & 0xff;
+                out[numOutGranules++] = (struct readonly_granule){
+                    .data = intermBitsCmdHeader,
+                    .size = 3,
+                };
+                out[numOutGranules++] = (struct readonly_granule){
+                    .data = tdi + curIdx / 8,
+                    .size = intermOctetsToSend,
+                };
+                in[numInGranules++] = (struct granule){
+                    .data = tdo + curIdx / 8,
+                    .size = intermOctetsToSend,
+                };
+                curIdx += intermOctetsToSend * 8;
+            }
+            if (curIdx == lastOctetStart) {
+                withTrailing = true;
+                trailingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
+                                            | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+                trailingBitsCmd[1] = numTrailingBits - 1;
+                trailingBitsCmd[2] = tdi[lastOctetStart / 8];
+                out[numOutGranules++] = (struct readonly_granule){
+                    .data = trailingBitsCmd,
+                    .size = 3,
+                };
+                in[numInGranules++] = (struct granule){
+                    .data = &trailingTdoBits,
+                    .size = 1,
+                };
+                curIdx += numTrailingBits;
+            }
+        }
+        if (curIdx == lastBitIdx) {
+            withLast = true;
+            const int lastTdiBit = !!get_bit(tdi, lastBitIdx);
+            const int lastTmsBit = !!lastTmsBitHigh;
+            lastBitCmd[0] = MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE;
+            lastBitCmd[1] = 0x00;
+            lastBitCmd[2] = (lastTdiBit << 7) | (lastTmsBit) << 1 | lastTmsBit;
+            out[numOutGranules++] = (struct readonly_granule){
+                .data = lastBitCmd,
+                .size = 3,
+            };
+            in[numInGranules++] = (struct granule){
+                .data = &lastTdoBit,
+                .size = 1,
+            };
+            curIdx += 1;
+        }
+
+        if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
             return false;
         }
-        tdi += thisBatchPayloadSz;
-        tdo += thisBatchPayloadSz;
-        remainingWholeBytes -= thisBatchPayloadSz;
-    }
 
-    if (trailerBitsToSend > 0) {
-        uint8_t trailerBitsSendCmd[] = {
-            MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG,
-            trailerBitsToSend - 1,
-            *tdi,
-        };
-        uint8_t trailerTdoBits;
-        if (!do_transfer(&d->ctx, trailerBitsSendCmd, sizeof(trailerBitsSendCmd),
-                    &trailerTdoBits, 1) || !ensure_synced(&d->ctx)) {
-            return false;
+        if (withLeading) {
+            copy_bits(&leadingTdoBits, 8 - numLeadingBits,
+                    tdo, fromBitIdx, numLeadingBits, false);
         }
-        *tdo = trailerTdoBits >> (8 - trailerBitsToSend);
+        if (withTrailing) {
+            copy_bits(&trailingTdoBits, 8 - numTrailingBits,
+                    tdo, lastOctetStart, numTrailingBits, false);
+        }
+        if (withLast) {
+            const int lastTdi = !!get_bit(tdi, lastBitIdx);
+            d->lastTdi = lastTdi;
+            const bool lastTdo = get_bit(&lastTdoBit, 7); /* TDO is shifted in from the right. */
+            set_bit(tdo, lastBitIdx, lastTdo);
+        }
     }
-
-    uint8_t lastTdiBit = !!(*tdi & (1 << trailerBitsToSend));
-    uint8_t lastBitSendCmd[] = {
-        MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE,
-        0x00,
-        buildTmsPayload(!!lastBitTmsHigh, 1, lastTdiBit),
-    };
-    uint8_t lastTdoBit;
-    if (!do_transfer(&d->ctx, lastBitSendCmd, sizeof(lastBitSendCmd),
-                &lastTdoBit, 1) || !ensure_synced(&d->ctx)) {
-        return false;
-    }
-    if (lastTdoBit & 0x80u) *tdo |= 1u << trailerBitsToSend;
-    else *tdo &= ~(1u << trailerBitsToSend);
-    d->lastTdi = lastTdiBit;
-    d->lastTms = lastBitTmsHigh;
     return true;
 }
 
@@ -306,6 +406,18 @@ static bool activate(const char **argNames, const char **argValues){
 
 #undef REQUIRE_FTDI_SUCCESS_
 
+    switch (d->ctx.type) {
+        case TYPE_2232H:
+            d->chipBufferSz = 4096;
+            break;
+        case TYPE_232H:
+            d->chipBufferSz = 1024;
+            break;
+        default:
+            ERROR("Unknown chip type: %d\n", d->ctx.type);
+            goto bail_reset_mode;
+    }
+
     uint8_t setupCmds[] = {
         SET_BITS_LOW,
         0x08, /* Initial levels: TCK=0, TDI=0, TMS=1 */
@@ -319,23 +431,11 @@ static bool activate(const char **argNames, const char **argValues){
         goto bail_reset_mode;
     }
     d->lastTdi = 0;
-    d->lastTms = 1;
 
     if (!txvc_jtag_splitter_init(&d->jtagSplitter, tmsSenderFn, d, tdiSenderFn, d)) {
         goto bail_reset_mode;
     }
 
-    switch (d->ctx.type) {
-        case TYPE_2232H:
-            d->chipBufferSz = 4096;
-            break;
-        case TYPE_232H:
-            d->chipBufferSz = 1024;
-            break;
-        default:
-            ERROR("Unknown chip type: %d\n", d->ctx.type);
-            goto bail_reset_mode;
-    }
     return true;
 
 bail_reset_mode:

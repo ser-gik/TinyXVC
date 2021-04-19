@@ -27,8 +27,11 @@
 #include "log.h"
 
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define TEXT_COLOR_RED "\x1b[31m"
 #define TEXT_COLOR_GREEN "\x1b[32m"
@@ -42,7 +45,21 @@ static const char gLevelNames[] = {
     [LOG_LEVEL_INFO] = 'I',
     [LOG_LEVEL_WARN] = 'W',
     [LOG_LEVEL_ERROR] = 'E',
+    [LOG_LEVEL_FATAL] = 'F',
 };
+
+static long long gOriginUs;
+
+static long long getTimeUs(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec * 1000ll * 1000ll + ts.tv_nsec / 1000ll;
+}
+
+__attribute__((constructor))
+static void initLogger(void) {
+    gOriginUs = getTimeUs();
+}
 
 void txvc_set_log_min_level(enum txvc_log_level level) {
     gMinLevel = level;
@@ -60,14 +77,13 @@ void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const c
     va_list ap;
     va_start(ap, fmt);
     char buf[1024];
-    const size_t tagLen = sizeof(tag->str);
-    memcpy(buf, tag->str, tagLen);
-    buf[tagLen + 0] = ':';
-    buf[tagLen + 1] = ' ';
-    buf[tagLen + 2] = gLevelNames[level];
-    buf[tagLen + 3] = ':';
-    buf[tagLen + 4] = ' ';
-    vsnprintf(buf + tagLen + 5, sizeof(buf) - tagLen - 5, fmt, ap);
+    char* head = buf;
+    size_t avail = sizeof(buf);
+    int prefixLen = snprintf(head, avail, "%'10lld: %.*s: %c: ",
+            getTimeUs() - gOriginUs, (int) sizeof(tag->str), tag->str, gLevelNames[level]);
+    head += prefixLen;
+    avail -= prefixLen;
+    vsnprintf(head, avail, fmt, ap);
     va_end(ap);
 
     const char* escColor;
@@ -75,11 +91,15 @@ void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const c
         case LOG_LEVEL_VERBOSE: escColor = TEXT_COLOR_RESET; break;
         case LOG_LEVEL_INFO: escColor = TEXT_COLOR_GREEN; break;
         case LOG_LEVEL_WARN: escColor = TEXT_COLOR_YELLOW; break;
-        case LOG_LEVEL_ERROR: escColor = TEXT_COLOR_RED; break;
+        case LOG_LEVEL_ERROR:
+        case LOG_LEVEL_FATAL: escColor = TEXT_COLOR_RED; break;
         default: escColor = TEXT_COLOR_RESET; break;
     }
 
     printf("%s%s%s", escColor, buf, TEXT_COLOR_RESET);
     fflush(stdout);
+    if (level == LOG_LEVEL_FATAL) {
+        abort();
+    }
 }
 

@@ -24,6 +24,7 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdint.h>
 #define TXVC_JTAG_SPLITTER_IMPL
 
 #include "jtag_splitter.h"
@@ -67,26 +68,9 @@ static const char* jtag_state_name(enum jtag_state state) {
     }
 }
 
-
-static bool get_bit(const uint8_t* vector, int idx) {
-    return vector[idx / 8] & (1u << (idx % 8));
-}
-
-static void set_bit(uint8_t* vector, int idx, bool bit) {
-    if (bit) vector[idx / 8] |= 1u << (idx % 8);
-    else vector[idx / 8] &= ~(1u << (idx % 8));
-}
-
-static void copy_bits(const uint8_t* src, int srcIdx, uint8_t* dst, int dstIdx, int numBits) {
-    for (int i = 0; i < numBits; i++) {
-        set_bit(dst, dstIdx++, get_bit(src, srcIdx++));
-    }
-}
-
 static bool tapReset(txvc_jtag_splitter_tms_sender_fn tmsSender, void* tmsSenderExtra) {
     const uint8_t tmsTapResetVector = 0x1f;
-    const int tmsTapResetVectorLen = 5;
-    return tmsSender(tmsTapResetVectorLen, &tmsTapResetVector, tmsSenderExtra);
+    return tmsSender(&tmsTapResetVector, 0, 5, tmsSenderExtra);
 }
 
 static enum jtag_state next_state(enum jtag_state curState, bool tmsHigh) {
@@ -137,53 +121,43 @@ bool txvc_jtag_splitter_deinit(struct txvc_jtag_splitter* splitter) {
 
 bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
         int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo) {
-    uint8_t vector[4096];
-    const int maxVectorBits = sizeof(vector) * 8;
-    int vectorBits = 0;
-
-    enum jtag_state curState = splitter->state;
-
-    for (int i = 0; i < numBits; i++) {
-        const bool tmsBit = get_bit(tms, i);
-        const bool tdiBit = get_bit(tdi, i);
-        set_bit(tdo, i, false);
-        const enum jtag_state nextState = next_state(curState, tmsBit);
-        if (VERBOSE_ENABLED && curState != nextState) {
-            VERBOSE("%s => %s\n", jtag_state_name(curState), jtag_state_name(nextState));
-        }
-        const bool inShift = curState == ShiftDR || curState == ShiftIR;
-        const bool enteringShift = !inShift && (nextState == ShiftDR || nextState == ShiftIR);
-        const bool exitingShift = inShift && (nextState != ShiftDR && nextState != ShiftIR);
-
-        set_bit(vector, vectorBits++, inShift ? tdiBit : tmsBit);
-
-        const bool flush =
-               i == numBits - 1
-            || vectorBits == maxVectorBits
-            || enteringShift
-            || exitingShift;
-
-        if (flush) {
-            if (inShift) {
-                VERBOSE("flush %d TDI bits\n", vectorBits);
-                uint8_t tdoVector[sizeof(vector)];
-                if (!splitter->tdiSender(vectorBits, vector, tdoVector, tmsBit,
-                            splitter->tdiSenderExtra)) {
-                    goto bail_reset;
-                }
-                copy_bits(tdoVector, 0, tdo, i - vectorBits + 1, vectorBits);
-            } else {
-                VERBOSE("flush %d TMS bits\n", vectorBits);
-                if (!splitter->tmsSender(vectorBits, vector, splitter->tmsSenderExtra)) {
-                    goto bail_reset;
-                }
+    int firstPendingBitIdx = 0;
+    enum jtag_state jtagState = splitter->state;
+    for (int bitIdx = 0; bitIdx < numBits;) {
+        uint8_t tmsByte = tms[bitIdx / 8];
+        uint8_t tdiByte = tdi[bitIdx / 8];
+        const int thisRoundEndBitIdx = bitIdx + 8 > numBits ? numBits :bitIdx + 8;
+        for (; bitIdx < thisRoundEndBitIdx; tmsByte >>= 1, tdiByte >>= 1, bitIdx++) {
+            const bool tmsBit = tmsByte & 1;
+            const enum jtag_state nextJtagState = next_state(jtagState, tmsBit);
+            if (VERBOSE_ENABLED && jtagState != nextJtagState) {
+                VERBOSE("%s => %s\n", jtag_state_name(jtagState), jtag_state_name(nextJtagState));
             }
-            vectorBits = 0;
+            const bool isShift = jtagState == ShiftDR || jtagState == ShiftIR;
+            const bool nextIsShift = nextJtagState == ShiftDR || nextJtagState == ShiftIR;
+            const bool enteringShift = !isShift && nextIsShift;
+            const bool leavingShift = isShift && !nextIsShift;
+            const bool flush = bitIdx == numBits - 1 || enteringShift || leavingShift;
+            if (flush) {
+                const int nextPendingBitIdx = bitIdx + 1;
+                VERBOSE("flush %d %s bits\n", nextPendingBitIdx - firstPendingBitIdx, isShift ? "TDI" : "TMS");
+                if (isShift) {
+                    if (!splitter->tdiSender(tdi, tdo, firstPendingBitIdx, nextPendingBitIdx,
+                                tmsBit, splitter->tdiSenderExtra)) {
+                        goto bail_reset;
+                    }
+                } else {
+                    if (!splitter->tmsSender(tms, firstPendingBitIdx, nextPendingBitIdx,
+                                splitter->tmsSenderExtra)) {
+                        goto bail_reset;
+                    }
+                }
+                firstPendingBitIdx = nextPendingBitIdx;
+            }
+            jtagState = nextJtagState;
         }
-
-        curState = nextState;
     }
-    splitter->state = curState;
+    splitter->state = jtagState;
     return true;
 
 bail_reset:

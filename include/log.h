@@ -39,6 +39,7 @@ enum txvc_log_level {
     LOG_LEVEL_INFO,
     LOG_LEVEL_WARN,
     LOG_LEVEL_ERROR,
+    LOG_LEVEL_FATAL,
 };
 
 extern void txvc_set_log_min_level(enum txvc_log_level level);
@@ -86,6 +87,10 @@ extern void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, 
 #define INFO(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_INFO, (fmt), ## __VA_ARGS__)
 #define WARN(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_WARN, (fmt), ## __VA_ARGS__)
 #define ERROR(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_ERROR, (fmt), ## __VA_ARGS__)
+#define FATAL(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_FATAL, (fmt), ## __VA_ARGS__)
+
+#define ALWAYS_ASSERT(cond) \
+    do { if (!(cond)) FATAL("Violated condition: \"%s\"\n", #cond); } while (0)
 
 #ifdef __clang__
 #pragma clang diagnostic pop

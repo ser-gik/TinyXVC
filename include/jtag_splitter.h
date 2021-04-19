@@ -34,7 +34,10 @@
  * transfer. Byte 0 is sent first, each byte is sent from LSB to MSB.
  */
 typedef bool (*txvc_jtag_splitter_tms_sender_fn)(
-        int numBits, const uint8_t* tms, void* extra);
+        const uint8_t* tms,
+        int fromBitIdx,
+        int toBitIdx,
+        void* extra);
 
 /**
  * User-provided function that shifts TDI vector to a TAP and simultaneously fills TDO vector
@@ -43,7 +46,12 @@ typedef bool (*txvc_jtag_splitter_tms_sender_fn)(
  * Byte 0 is sent first, each byte is sent from LSB to MSB.
  */
 typedef bool (*txvc_jtag_splitter_tdi_sender_fn)(
-        int numBits, const uint8_t* tdi, uint8_t* tdo, bool lastBitTmsHigh, void* extra);
+        const uint8_t* tdi,
+        uint8_t* tdo,
+        int fromBitIdx,
+        int toBitIdx,
+        bool lastTmsBitHigh,
+        void* extra);
 
 struct txvc_jtag_splitter {
 #ifdef TXVC_JTAG_SPLITTER_IMPL
