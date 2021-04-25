@@ -25,8 +25,10 @@
  */
 
 #include "log.h"
+#include "txvc_defs.h"
 
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +41,6 @@
 #define TEXT_COLOR_RESET "\x1b[0m"
 
 static enum txvc_log_level gMinLevel = LOG_LEVEL_ERROR;
-
 static const char gLevelNames[] = {
     [LOG_LEVEL_VERBOSE] = 'V',
     [LOG_LEVEL_INFO] = 'I',
@@ -47,8 +48,8 @@ static const char gLevelNames[] = {
     [LOG_LEVEL_ERROR] = 'E',
     [LOG_LEVEL_FATAL] = 'F',
 };
-
 static long long gOriginUs;
+static char *gTagSpec;
 
 static long long getTimeUs(void) {
     struct timespec ts;
@@ -61,16 +62,69 @@ static void initLogger(void) {
     gOriginUs = getTimeUs();
 }
 
-void txvc_set_log_min_level(enum txvc_log_level level) {
+static bool tag_enabled(struct txvc_log_tag *tag) {
+    TXVC_UNUSED(tag);
+    return true;
+}
+
+static bool tag_disabled(struct txvc_log_tag *tag) {
+    TXVC_UNUSED(tag);
+    return false;
+}
+
+void txvc_log_init(const char *tagSpec, enum txvc_log_level level) {
+    if (!gTagSpec) free(gTagSpec);
+    gTagSpec = strdup(tagSpec);
     gMinLevel = level;
+}
+
+bool txvc_log_tag_enabled(struct txvc_log_tag *tag) {
+    if (tag->isEnabled != txvc_log_tag_enabled) {
+        /* This tag is resolved already */
+        return tag->isEnabled(tag);
+    }
+    /*
+     * First resolve this by scanning tag spec. Once resoultion is known - update tag to use
+     * quick constant checker function.
+     */
+    int enabled = -1;
+    char* name = gTagSpec;
+    for (;;) {
+        char* const nameResolution = strpbrk(name, "+-");
+        if (!nameResolution) break;
+        const size_t nameLen = nameResolution - name;
+        if (nameLen > 0 && (strncmp(tag->str, name, nameLen) == 0
+                            || strncmp("all", name, nameLen) == 0)) {
+            enabled = *nameResolution == '+';
+        }
+        name = nameResolution + 1;
+    }
+
+    if (*name != '\0') {
+        txvc_log(&(struct txvc_log_tag){ .isEnabled = tag_enabled, .str = "logger", },
+                LOG_LEVEL_FATAL, "Tag spec \"%s\" has no resolution at the end\n", gTagSpec);
+    }
+    if (enabled == -1) {
+        txvc_log(&(struct txvc_log_tag){ .isEnabled = tag_enabled, .str = "logger", },
+                LOG_LEVEL_FATAL, "Tag spec \"%s\" does not define resolution for tag \"%s\"\n",
+                gTagSpec, tag->str);
+    }
+
+    if (enabled) {
+        tag->isEnabled = tag_enabled;
+        return true;
+    } else {
+        tag->isEnabled = tag_disabled;
+        return false;
+    }
 }
 
 bool txvc_log_level_enabled(enum txvc_log_level level) {
     return gMinLevel <= level;
 }
 
-void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...) {
-    if (level < gMinLevel) {
+void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...) {
+    if (level < gMinLevel || !tag->isEnabled(tag)) {
         return;
     }
 
@@ -79,8 +133,8 @@ void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const c
     char buf[1024];
     char* head = buf;
     size_t avail = sizeof(buf);
-    int prefixLen = snprintf(head, avail, "%'10lld: %.*s: %c: ",
-            getTimeUs() - gOriginUs, (int) sizeof(tag->str), tag->str, gLevelNames[level]);
+    int prefixLen = snprintf(head, avail, "%10lld: %15s: %c: ", getTimeUs() - gOriginUs,
+                                                                    tag->str, gLevelNames[level]);
     head += prefixLen;
     avail -= prefixLen;
     vsnprintf(head, avail, fmt, ap);

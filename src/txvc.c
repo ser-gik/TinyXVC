@@ -44,6 +44,7 @@
 TXVC_DEFAULT_LOG_TAG(txvc);
 
 #define DEFAULT_SERVER_ADDR "127.0.0.1:2542"
+#define DEFAULT_LOG_TAG_SPEC "all+"
 
 #define CLI_OPTION_LIST_ITEMS(OPT_FLAG, OPT)                                                       \
     OPT_FLAG("h", help, "Print this message")                                                      \
@@ -57,6 +58,12 @@ TXVC_DEFAULT_LOG_TAG(txvc);
                          " Can be used to enforce device to operate at specific rate if "          \
                          " connected client doesn't set preferred value via \"settck\" command",   \
             "initial_tck_period_ns", int, parse_int_option(optarg))                                \
+    OPT("l", logTagSpec, "Log tags to enable/disable."                                             \
+                         " A sequence of tags names where each name is followed by '+' to enable"  \
+                         " or '-' to disable it. Use 'all[+-]' to enable or disable all tags."     \
+                         " E.g. 'foo-all+bar-' enables all tags except for 'bar'."                 \
+                         " (default '" DEFAULT_LOG_TAG_SPEC "')",                                  \
+            "log_tag_specification", const char *, optarg)                                         \
 
 struct cli_options {
 #define AS_STRUCT_FIELD_FLAG(optChar, name, description) bool name;
@@ -238,7 +245,8 @@ int main(int argc, char**argv) {
         return EXIT_FAILURE;
     }
 
-    txvc_set_log_min_level(opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
+    txvc_log_init(opts.logTagSpec ? opts.logTagSpec : DEFAULT_LOG_TAG_SPEC,
+                    opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
     if (opts.help) {
         printUsage(argv[0], true);
         return EXIT_SUCCESS;
