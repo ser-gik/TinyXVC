@@ -31,6 +31,7 @@
 
 #include "log.h"
 #include "txvc_defs.h"
+#include "bit_vector.h"
 
 TXVC_DEFAULT_LOG_TAG(jtag-split);
 
@@ -125,14 +126,10 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
     enum jtag_state jtagState = splitter->state;
     for (int bitIdx = 0; bitIdx < numBits;) {
         uint8_t tmsByte = tms[bitIdx / 8];
-        uint8_t tdiByte = tdi[bitIdx / 8];
         const int thisRoundEndBitIdx = bitIdx + 8 > numBits ? numBits :bitIdx + 8;
-        for (; bitIdx < thisRoundEndBitIdx; tmsByte >>= 1, tdiByte >>= 1, bitIdx++) {
+        for (; bitIdx < thisRoundEndBitIdx; tmsByte >>= 1, bitIdx++) {
             const bool tmsBit = tmsByte & 1;
             const enum jtag_state nextJtagState = next_state(jtagState, tmsBit);
-            if (VERBOSE_ENABLED && jtagState != nextJtagState) {
-                VERBOSE("%s => %s\n", jtag_state_name(jtagState), jtag_state_name(nextJtagState));
-            }
             const bool isShift = jtagState == ShiftDR || jtagState == ShiftIR;
             const bool nextIsShift = nextJtagState == ShiftDR || nextJtagState == ShiftIR;
             const bool enteringShift = !isShift && nextIsShift;
@@ -140,11 +137,38 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
             const bool flush = bitIdx == numBits - 1 || enteringShift || leavingShift;
             if (flush) {
                 const int nextPendingBitIdx = bitIdx + 1;
-                VERBOSE("flush %d %s bits\n", nextPendingBitIdx - firstPendingBitIdx, isShift ? "TDI" : "TMS");
                 if (isShift) {
+
+                    for (int i = firstPendingBitIdx; i < nextPendingBitIdx; i++) {
+                        if (!splitter->tdiSender(tdi, tdo, i, i + 1,
+                                    i == nextPendingBitIdx - 1 ? tmsBit : false, splitter->tdiSenderExtra)) {
+                            goto bail_reset;
+                        }
+                    }
+
+
+                    /*
+
                     if (!splitter->tdiSender(tdi, tdo, firstPendingBitIdx, nextPendingBitIdx,
                                 tmsBit, splitter->tdiSenderExtra)) {
                         goto bail_reset;
+                    }
+                    */
+                    if (VERBOSE_ENABLED) {
+                        char buf[1024];
+                        const char* logPrefix = tmsBit ? "shift" : "partial shift";
+                        const int numBitsShifted = nextPendingBitIdx - firstPendingBitIdx;
+                        if (numBitsShifted > (int) sizeof(buf) - 1) {
+                            VERBOSE("%s in:  (%d bits)\n", logPrefix, numBitsShifted);
+                            VERBOSE("%s out: (%d bits)\n", logPrefix, numBitsShifted);
+                        } else {
+                            txvc_bit_vector_format_msb(buf, sizeof(buf), tdi,
+                                    firstPendingBitIdx, nextPendingBitIdx);
+                            VERBOSE("%s in:  %s\n", logPrefix, buf);
+                            txvc_bit_vector_format_msb(buf, sizeof(buf), tdo,
+                                    firstPendingBitIdx, nextPendingBitIdx);
+                            VERBOSE("%s out: %s\n", logPrefix, buf);
+                        }
                     }
                 } else {
                     if (!splitter->tmsSender(tms, firstPendingBitIdx, nextPendingBitIdx,
@@ -153,6 +177,9 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
                     }
                 }
                 firstPendingBitIdx = nextPendingBitIdx;
+            }
+            if (VERBOSE_ENABLED && jtagState != nextJtagState) {
+                VERBOSE("%s\n", jtag_state_name(nextJtagState));
             }
             jtagState = nextJtagState;
         }

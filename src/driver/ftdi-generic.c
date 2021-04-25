@@ -28,6 +28,7 @@
 #include "jtag_splitter.h"
 #include "log.h"
 #include "txvc_defs.h"
+#include "bit_vector.h"
 
 #include <libftdi1/ftdi.h>
 
@@ -263,7 +264,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
      * a bit of extra space for leading, trailing and last bit commands.
      * This just simplifies a loop below.
      */
-    const int maxIntermOctetsPerTransfer = d->chipBufferSz
+    const int maxIntermOctetsPerTransfer = d->chipBufferSz / 2
         - 3 /* Command for sending heading bits */
         - 3 /* Command for sending middle bytes w/o payload */
         - 3 /* Command for sending trailing bits except for the last one */
@@ -284,7 +285,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
             leadingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
                                         | MPSSE_BITMODE | MPSSE_WRITE_NEG;
             leadingBitsCmd[1] = numLeadingBits - 1;
-            leadingBitsCmd[2] = tdi[0] >> (8 - numLeadingBits);
+            leadingBitsCmd[2] = tdi[fromBitIdx / 8] >> (fromBitIdx % 8);
             out[numOutGranules++] = (struct readonly_granule){
                 .data = leadingBitsCmd,
                 .size = 3,
@@ -302,8 +303,8 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                     min((lastOctetStart - curIdx) / 8, maxIntermOctetsPerTransfer);
                 intermBitsCmdHeader[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
                                                 | MPSSE_WRITE_NEG;
-                intermBitsCmdHeader[1] = ((intermOctetsToSend - 1) >>  0) & 0xff;
-                intermBitsCmdHeader[2] = ((intermOctetsToSend - 1) >> 16) & 0xff;
+                intermBitsCmdHeader[1] = ((intermOctetsToSend - 1) >> 0) & 0xff;
+                intermBitsCmdHeader[2] = ((intermOctetsToSend - 1) >> 8) & 0xff;
                 out[numOutGranules++] = (struct readonly_granule){
                     .data = intermBitsCmdHeader,
                     .size = 3,
@@ -335,8 +336,14 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                 curIdx += numTrailingBits;
             }
         }
+        if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
+            return false;
+        }
+
         if (curIdx == lastBitIdx) {
             withLast = true;
+            numOutGranules = 0;
+            numInGranules = 0;
             const int lastTdiBit = !!get_bit(tdi, lastBitIdx);
             const int lastTmsBit = !!lastTmsBitHigh;
             lastBitCmd[0] = MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE;
@@ -351,10 +358,11 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                 .size = 1,
             };
             curIdx += 1;
-        }
 
-        if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
-            return false;
+            /* TODO having TMS command in the same batch somehow blocks writes */
+            if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
+                return false;
+            }
         }
 
         if (withLeading) {
@@ -374,6 +382,76 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
     }
     return true;
 }
+
+TXVC_USED
+static bool loopback_test(struct driver* d) {
+    INFO("%s: start\n", __func__);
+    const uint8_t loopback_start = LOOPBACK_START;
+    if (!do_transfer(&d->ctx, &loopback_start, 1, NULL, 0)) return false;
+
+    bool res = true;
+    const int maxVectorBits = 64;
+
+    for (int round = 0; round < 100; round++) {
+        uint8_t tdi[10];
+        uint8_t tdo[10];
+        txvc_bit_vector_random(tdi, sizeof(tdi));
+
+        for (int start = 0; start < maxVectorBits; start++) {
+            for (int end = start + 1; end < maxVectorBits; end++) {
+                memcpy(tdo, tdi, sizeof(tdo));
+                if (!tdiSenderFn(tdi, tdo, start, end, true, d)) {
+                    ERROR("%s: failed to transfer\n", __func__);
+                    return false;
+                }
+                if (memcmp(tdi, tdo, sizeof(tdo)) != 0) {
+                    res = false;
+                    char tdiStr[4096];
+                    txvc_bit_vector_format_lsb(tdiStr, sizeof(tdiStr), tdi, start, end);
+                    char tdoStr[4096];
+                    txvc_bit_vector_format_lsb(tdoStr, sizeof(tdoStr), tdo, start, end);
+                    WARN("%s: mismatch: (start: %d, end: %d)\n", __func__, start, end);
+                    WARN("TDI: %s\n", tdiStr);
+                    WARN("TDO: %s\n", tdoStr);
+                }
+            }
+        }
+    }
+
+    if (0) {
+        uint8_t tdi[1024];
+        uint8_t tdo[1024];
+        txvc_bit_vector_random(tdi, sizeof(tdi));
+
+        for (int end = 1; end < 1024 * 8; end++) {
+            memcpy(tdo, tdi, sizeof(tdo));
+            INFO("Sending %d bits\n", end);
+            if (!tdiSenderFn(tdi, tdo, 0, end, true, d)) {
+                ERROR("%s: failed to transfer\n", __func__);
+                return false;
+            }
+            if (memcmp(tdi, tdo, sizeof(tdo)) != 0) {
+                res = false;
+                char tdiStr[4096];
+                txvc_bit_vector_format_lsb(tdiStr, sizeof(tdiStr), tdi, 0, end);
+                char tdoStr[4096];
+                txvc_bit_vector_format_lsb(tdoStr, sizeof(tdoStr), tdo, 0, end);
+                WARN("%s: mismatch: (start: %d, end: %d)\n", __func__, 0, end);
+                WARN("TDI: %s\n", tdiStr);
+                WARN("TDO: %s\n", tdoStr);
+            }
+        }
+    }
+
+
+
+
+    const uint8_t loopback_end = LOOPBACK_END;
+    if (!do_transfer(&d->ctx, &loopback_end, 1, NULL, 0)) return false;
+    INFO("%s: done\n", __func__);
+    return res;
+}
+
 
 static bool activate(const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
@@ -431,6 +509,13 @@ static bool activate(const char **argNames, const char **argValues){
         goto bail_reset_mode;
     }
     d->lastTdi = 0;
+
+
+    if (0 && !loopback_test(d)) {
+        goto bail_reset_mode;
+    }
+
+
 
     if (!txvc_jtag_splitter_init(&d->jtagSplitter, tmsSenderFn, d, tdiSenderFn, d)) {
         goto bail_reset_mode;
