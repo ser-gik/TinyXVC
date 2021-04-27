@@ -20,7 +20,7 @@ add_executable(TinyXVC
     src/bit_vector.c
     src/driver/echo.c
     src/driver/ft2232h.c
-    src/driver/ftdi-generic.c
+    src/driver/ftdi_generic.c
     )
 set_property(TARGET TinyXVC PROPERTY C_STANDARD 11)
 set_property(TARGET TinyXVC PROPERTY OUTPUT_NAME txvc)
