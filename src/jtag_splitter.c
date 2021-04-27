@@ -139,21 +139,21 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
                 const int nextPendingBitIdx = bitIdx + 1;
                 if (isShift) {
 
+                    /*
                     for (int i = firstPendingBitIdx; i < nextPendingBitIdx; i++) {
                         if (!splitter->tdiSender(tdi, tdo, i, i + 1,
                                     i == nextPendingBitIdx - 1 ? tmsBit : false, splitter->tdiSenderExtra)) {
                             goto bail_reset;
                         }
                     }
+                    */
 
 
-                    /*
 
                     if (!splitter->tdiSender(tdi, tdo, firstPendingBitIdx, nextPendingBitIdx,
                                 tmsBit, splitter->tdiSenderExtra)) {
                         goto bail_reset;
                     }
-                    */
                     if (VERBOSE_ENABLED) {
                         char buf[1024];
                         const char* logPrefix = tmsBit ? "shift" : "partial shift";
