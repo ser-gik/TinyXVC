@@ -10,56 +10,42 @@ endif()
 find_package(LibFTDI1 NO_MODULE REQUIRED)
 include(${LIBFTDI_USE_FILE})
 
+set(TXVC_C_FLAGS -Wall -Wextra -Wpedantic -Werror -ffunction-sections -fdata-sections)
+
+function(add_txvc_library target)
+    cmake_parse_arguments(ARG
+        ""
+        ""
+        "SRCS;INCDIRS;DEPENDS" ${ARGN})
+    add_library(${target} OBJECT ${ARG_SRCS})
+    set_property(TARGET ${target} PROPERTY C_STANDARD 11)
+    target_compile_options(${target} PUBLIC ${TXVC_C_FLAGS})
+    if(ARG_INCDIRS)
+        target_include_directories(${target} PUBLIC ${ARG_INCDIRS})
+    endif()
+    if(ARG_DEPENDS)
+        target_link_libraries(${target} ${ARG_DEPENDS})
+    endif()
+endfunction()
 
 function(add_txvc_executable target)
     cmake_parse_arguments(ARG
         ""
         "OUTPUT_NAME"
-        "DEPENDS;SRCS" ${ARGN})
+        "SRCS;DEPENDS" ${ARGN})
     add_executable(${target} ${ARG_SRCS})
     set_property(TARGET ${target} PROPERTY C_STANDARD 11)
     if(ARG_OUTPUT_NAME)
         set_property(TARGET ${target} PROPERTY OUTPUT_NAME ${ARG_OUTPUT_NAME})
     endif()
-    target_compile_options(${target}
-        PRIVATE -Wall -Wextra -Wpedantic -Werror -ffunction-sections -fdata-sections)
+    target_compile_options(${target} PRIVATE ${TXVC_C_FLAGS})
     if(ARG_DEPENDS)
         target_link_libraries(${target} ${ARG_DEPENDS})
     endif()
 endfunction()
 
 
-add_txvc_executable(TinyXVC
-    SRCS
-    src/txvc.c
-    src/log.c
-    src/driver.c
-    src/alias.c
-    src/server.c
-    src/jtag_splitter.c
-    src/bit_vector.c
-    src/driver/echo.c
-    src/driver/ft2232h.c
-    src/driver/ftdi_generic.c
-    OUTPUT_NAME
-    txvc
-    DEPENDS
-    ftdi1
-    )
-target_include_directories(TinyXVC
-    PRIVATE include/
-    )
-target_link_options(TinyXVC
-    PRIVATE -Wl,--script=${CMAKE_CURRENT_LIST_DIR}/src/driver.ld
-            -Wl,--gc-sections
-    )
-
-add_txvc_executable(Tester
-    SRCS
-    test/support/main.c
-    test/dummy.c
-    )
-add_custom_target(UnitTest
-    Tester
-    )
+add_subdirectory(test_support)
+add_subdirectory(tests)
+add_subdirectory(src)
 

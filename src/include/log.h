@@ -47,8 +47,7 @@ struct txvc_log_tag {
     char str[16];
 };
 
-#define TXVC_LOG_TAG_INITIALIZER(tag)                                                              \
-    (struct txvc_log_tag) {                                                                        \
+#define TXVC_LOG_TAG_INITIALIZER(tag) {                                                            \
         .isEnabled = txvc_log_tag_enabled,                                                         \
         .str = #tag,                                                                               \
     }
