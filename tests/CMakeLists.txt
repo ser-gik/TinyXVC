@@ -2,7 +2,7 @@
 add_txvc_executable(Tests
     SRCS
     main.c
-    another.c
+    bit_vector.c
     DEPENDS
     TinyTest
     Txvc

@@ -70,7 +70,7 @@ int txvc_bit_vector_format_lsb(char* out, int outSz, const uint8_t* vector, int 
             p++;
             avail--;
             idx++;
-        } while ((idx < end) && (idx % 8));
+        } while ((idx < end) && (idx % 8) != 0);
     }
     if (avail <= 0) out[outSz - 1] = '\0';
     else *p = '\0';
@@ -88,7 +88,7 @@ int txvc_bit_vector_format_msb(char* out, int outSz, const uint8_t* vector, int 
             p++;
             avail--;
             idx--;
-        } while ((idx >= start) && (idx % 8));
+        } while ((idx >= start) && (idx % 8) != 7);
     }
     if (avail <= 0) out[outSz - 1] = '\0';
     else *p = '\0';
