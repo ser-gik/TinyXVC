@@ -48,7 +48,7 @@ struct test {
     int numCasesTotal;
 };
 
-extern struct test gTest;
+extern struct test gTinyTest;
 
 #ifdef __GNUC__
 #define ATTR_GLOBAL_CTOR __attribute__((constructor))

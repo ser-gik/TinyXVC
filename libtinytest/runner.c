@@ -24,14 +24,14 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "test.h"
+#include "ttest/test.h"
 
 #include <stdio.h>
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
 
-struct test gTest = {
+struct test gTinyTest = {
     .numSuites = 0,
     .numFailedCases = 0,
     .numCasesTotal = 0,
@@ -47,7 +47,7 @@ static struct test_context {
 } gTestCaseContext;
 
 static void run_case(struct test_suite *suite, struct test_case *case_) {
-    gTest.numCasesTotal++;
+    gTinyTest.numCasesTotal++;
     printf("[%s] [%s] - ", suite->name, case_->name);
     {
         struct test_context *ctx = &gTestCaseContext;
@@ -63,7 +63,7 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
         if (ctx->failed) {
             printf("FAILED\n");
             fputs(ctx->messages, stdout);
-            gTest.numFailedCases++;
+            gTinyTest.numFailedCases++;
         } else {
             printf("OK\n");
         }
@@ -71,7 +71,7 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
     printf("\n");
 }
 
-void test_mark_current_as_failed(const char *file, int line, const char* message, bool isFatal) {
+void ttest_mark_current_case_as_failed(const char *file, int line, const char* message, bool isFatal) {
     struct test_context *ctx = &gTestCaseContext;
     ctx->failed = true;
     int avail = MAX_FAILED_TEST_MESSAGE - ctx->messagesHead - 1;
@@ -88,15 +88,15 @@ void test_mark_current_as_failed(const char *file, int line, const char* message
     }
 }
 
-bool test_run_all(void) {
-    for (int suiteIdx = 0; suiteIdx < gTest.numSuites; suiteIdx++) {
-        struct test_suite *suite = gTest.suites[suiteIdx];
+bool ttest_run_all(void) {
+    for (int suiteIdx = 0; suiteIdx < gTinyTest.numSuites; suiteIdx++) {
+        struct test_suite *suite = gTinyTest.suites[suiteIdx];
         for (int caseIdx = 0; caseIdx < suite->numCases; caseIdx++) {
             struct test_case *case_ = suite->cases[caseIdx];
             run_case(suite, case_);
         }
     }
-    printf("Total: %d, failed: %d\n", gTest.numCasesTotal, gTest.numFailedCases);
-    return gTest.numFailedCases == 0;
+    printf("Total: %d, failed: %d\n", gTinyTest.numCasesTotal, gTinyTest.numFailedCases);
+    return gTinyTest.numFailedCases == 0;
 }
 

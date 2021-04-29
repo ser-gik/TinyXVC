@@ -24,13 +24,13 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "test.h"
+#include "ttest/test.h"
 
 #include <stdlib.h>
 
 int main(int argc, const char **argv) {
     (void) argc;
     (void) argv;
-    return test_run_all() ? EXIT_SUCCESS : EXIT_FAILURE;
+    return ttest_run_all() ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

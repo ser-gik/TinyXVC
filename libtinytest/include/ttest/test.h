@@ -33,12 +33,19 @@
 #include <stdbool.h>
 
 /**
- * Defining tests and test suites.
+ * TinyTest is a simple xUnit-style library for writing unit tests conveniently in small sized
+ * C projects.
  */
 
 /**
- * Defines test suite.
- * There MUST be exactly one test suite per translation unit.
+ * Defines test suite. There can be only one test suite per translation unit.
+ * Put this macro at the top of your source, before you start adding test cases:
+ *
+ * #include "ttest/test.h"
+ *
+ * TEST_SUITE(foo)
+ *
+ * Suite is registered automatically.
  */
 #define TEST_SUITE(suiteName) \
     static struct test_suite gTestSuite = { \
@@ -46,16 +53,21 @@
         .numCases = 0, \
     }; \
     ATTR_GLOBAL_CTOR static void registerSuite(void) { \
-        if (gTest.numSuites < MAX_SUITES) gTest.suites[gTest.numSuites++] = &gTestSuite; \
-        else { fprintf(stderr, "Too many suites\n"); abort(); } \
+        if (gTinyTest.numSuites < MAX_SUITES) { \
+            gTinyTest.suites[gTinyTest.numSuites++] = &gTestSuite; \
+        } else { \
+            fprintf(stderr, "Too many suites\n"); abort(); \
+        } \
     }
 
 /**
- * Defines a test case in the current test suite.
- * E.g.:
- *     TEST_CASE(add) {
- *         ASSERT_EQ(4, 2 + 2);
- *     }
+ * Defines a test case in a current test suite:
+ * 
+ * TEST_CASE(Add) {
+ *     ASSERT_EQ(4, 2 + 2);
+ * }
+ *
+ * Case is registered automatically.
  */
 #define TEST_CASE(caseName) \
     static void caseName(void); \
@@ -71,14 +83,31 @@
     static void caseName(void)
 
 /**
- * Runner interface
+ * Call this function from within your test case to indicate that it has failed.
+ * Note that it should only be called on the same thread where test case was invoked. (Though
+ * this doesn't preclude user from testing multithreaded code in general.)
+ * When 'isFatal' is 'true' - test case will be interrupted immediately, with no executing
+ * any code after this call. At the same time this does not affect executing of other cases and suites.
+ *
+ * This is a low level API, use it if none of assertion APIs below suffice your needs.
  */
-void test_mark_current_as_failed(const char *file, int line, const char* message, bool isFatal);
-bool test_run_all(void);
+void ttest_mark_current_case_as_failed(const char *file, int line, const char* message, bool isFatal);
 
 /**
- * Assertions
+ * Call this function once to execute all defined test cases.
+ * Typically it is called directly from main() of a tester executable.
+ * Returns 'true' if all cases were passed successfully.
  */
+bool ttest_run_all(void);
+
+/**
+ * Assertions.
+ * Below are handy checkers that can be used in test cases.
+ * There are two categories:
+ * ASSERT_* - fail and interrupt current case,
+ * EXPECT_* - fail and continue current case.
+ */
+
 void check_boolean(const char *file, int line, bool isFatal,
         bool expected, bool actual, const char* expression);
 

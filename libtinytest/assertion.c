@@ -24,7 +24,7 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "test.h"
+#include "ttest/test.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -36,7 +36,7 @@ void check_boolean(const char *file, int line, bool isFatal,
     }
     char msg[128];
     snprintf(msg, sizeof(msg), "<%s> is not <%s>", expression, expected ? "true" : "false");
-    test_mark_current_as_failed(file, line, msg, isFatal);
+    ttest_mark_current_case_as_failed(file, line, msg, isFatal);
 }
 
 #define DEFINE_CHECK_EQUAL_FOR_INTEGRAL(type, suffix, formatSpec) \
@@ -50,7 +50,7 @@ void check_equal_ ## suffix(const char *file, int line, bool isFatal, bool inver
     snprintf(msg, sizeof(msg), "%sexpected <" formatSpec "> but got <" formatSpec ">", \
             invert ? "not " : "", \
             expected, actual); \
-    test_mark_current_as_failed(file, line, msg, isFatal); \
+    ttest_mark_current_case_as_failed(file, line, msg, isFatal); \
 }
 
 DEFINE_CHECK_EQUAL_FOR_INTEGRAL(char, char, "%c")
@@ -69,6 +69,6 @@ void check_equal_cstr(const char *file, int line, bool isFatal, bool invert,
     snprintf(msg, sizeof(msg), "%sexpected <%s> but got <%s>",
             invert ? "not " : "",
             expected.data, actual.data);
-    test_mark_current_as_failed(file, line, msg, isFatal);
+    ttest_mark_current_case_as_failed(file, line, msg, isFatal);
 }
 

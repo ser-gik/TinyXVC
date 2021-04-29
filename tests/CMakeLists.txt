@@ -4,10 +4,11 @@ add_txvc_executable(Tests
     main.c
     another.c
     DEPENDS
-    TestSupport
+    TinyTest
     Txvc
     )
 add_custom_target(UnitTest
     Tests
+    COMMENT "Running unit tests"
     )
 

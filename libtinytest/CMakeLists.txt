@@ -1,5 +1,5 @@
 
-add_txvc_library(TestSupport
+add_txvc_library(TinyTest
     SRCS
     runner.c
     assertion.c
