@@ -25,16 +25,25 @@
  */
 
 #include "drivers/drivers.h"
+#include "txvc/driver.h"
 
 #include <stddef.h>
 
-/* These symbols are defined in driver.ld */
-extern const struct txvc_driver __txvc_drivers_begin[];
-extern const struct txvc_driver __txvc_drivers_end[];
+extern const struct txvc_driver driver_echo;
+extern const struct txvc_driver driver_ft2232h;
+extern const struct txvc_driver driver_ftdi_generic;
+
+static const struct txvc_driver * const gDrivers[] = {
+    &driver_echo,
+    &driver_ft2232h,
+    &driver_ftdi_generic,
+};
+static const size_t gNumDrivers = sizeof(gDrivers) / sizeof(gDrivers[0]);
 
 const struct txvc_driver* txvc_enumerate_drivers(
         bool (*fn)(const struct txvc_driver *d, const void *extra), const void *extra) {
-    for (const struct txvc_driver* d = __txvc_drivers_begin; d != __txvc_drivers_end; d++) {
+    for (size_t i = 0; i < gNumDrivers; i++) {
+        const struct txvc_driver *d = gDrivers[i];
         if(!fn(d, extra)) {
             return d;
         }

@@ -388,7 +388,7 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
     return do_shift_bits(d, numBits, tmsVector, tdiVector, tdoVector);
 }
 
-TXVC_DRIVER(ft2232h) = {
+const struct txvc_driver driver_ft2232h = {
     .name = "ft2232h",
     .help =
         "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"

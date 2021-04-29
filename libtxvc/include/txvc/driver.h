@@ -45,9 +45,5 @@ struct txvc_driver {
             const uint8_t *tdiVector,
             uint8_t *tdoVector
             );
-} TXVC_ALIGNED(16);
-
-#define TXVC_DRIVER(name) \
-    static const struct txvc_driver txvc_driver_ ## name \
-        TXVC_SECTION(.txvc_driver) TXVC_USED TXVC_ALIGNED(16)
+};
 

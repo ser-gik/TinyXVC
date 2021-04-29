@@ -55,7 +55,7 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
     return true;
 }
 
-TXVC_DRIVER(echo) = {
+const struct txvc_driver driver_echo = {
     .name = "echo",
     .help = "Simple loopback driver that forwards TDI vector to TDO. No real device is involved\n"
             "Parameters:\n   none\n",

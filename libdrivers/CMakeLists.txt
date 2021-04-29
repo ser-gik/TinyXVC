@@ -10,6 +10,5 @@ add_txvc_library(Drivers
     DEPENDS
     Txvc
     ftdi1
-    "-Wl,--script=${CMAKE_CURRENT_LIST_DIR}/driver.ld"
     )
 

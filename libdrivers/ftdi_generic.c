@@ -586,7 +586,7 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
     return txvc_jtag_splitter_process(&d->jtagSplitter, numBits, tmsVector, tdiVector, tdoVector);
 }
 
-TXVC_DRIVER(ftdi_generic) = {
+const struct txvc_driver driver_ftdi_generic = {
     .name = "ftdi-generic",
     .help =
         "Sends vectors to a device that is connected to JTAG pins of a MPSSE-capable FTDI chip,"
