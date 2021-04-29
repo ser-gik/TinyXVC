@@ -25,10 +25,12 @@
  */
 
 #include "alias.h"
-#include "driver.h"
-#include "log.h"
-#include "server.h"
-#include "txvc_defs.h"
+#include "txvc/driver.h"
+#include "txvc/log.h"
+#include "txvc/server.h"
+#include "txvc/defs.h"
+
+#include "drivers/drivers.h"
 
 #include <unistd.h>
 

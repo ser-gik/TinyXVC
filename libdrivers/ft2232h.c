@@ -24,9 +24,9 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "driver.h"
-#include "log.h"
-#include "txvc_defs.h"
+#include "txvc/driver.h"
+#include "txvc/log.h"
+#include "txvc/defs.h"
 
 #include <libftdi1/ftdi.h>
 

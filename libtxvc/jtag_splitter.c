@@ -27,11 +27,11 @@
 #include <stdint.h>
 #define TXVC_JTAG_SPLITTER_IMPL
 
-#include "jtag_splitter.h"
+#include "txvc/jtag_splitter.h"
 
-#include "log.h"
-#include "txvc_defs.h"
-#include "bit_vector.h"
+#include "txvc/log.h"
+#include "txvc/defs.h"
+#include "txvc/bit_vector.h"
 
 TXVC_DEFAULT_LOG_TAG(jtag-split);
 

@@ -24,8 +24,8 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "log.h"
-#include "txvc_defs.h"
+#include "txvc/log.h"
+#include "txvc/defs.h"
 
 #include <stdarg.h>
 #include <stddef.h>

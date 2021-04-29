@@ -1,0 +1,11 @@
+
+add_txvc_library(Txvc
+    SRCS
+    bit_vector.c
+    jtag_splitter.c
+    log.c
+    server.c
+    INCDIRS
+    include/
+    )
+

@@ -45,7 +45,9 @@ function(add_txvc_executable target)
 endfunction()
 
 
+add_subdirectory(libtxvc)
+add_subdirectory(libdrivers)
+add_subdirectory(txvc)
 add_subdirectory(test_support)
 add_subdirectory(tests)
-add_subdirectory(src)
 

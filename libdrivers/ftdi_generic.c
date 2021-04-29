@@ -24,11 +24,11 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "driver.h"
-#include "jtag_splitter.h"
-#include "log.h"
-#include "txvc_defs.h"
-#include "bit_vector.h"
+#include "txvc/driver.h"
+#include "txvc/jtag_splitter.h"
+#include "txvc/log.h"
+#include "txvc/defs.h"
+#include "txvc/bit_vector.h"
 
 #include <libftdi1/ftdi.h>
 

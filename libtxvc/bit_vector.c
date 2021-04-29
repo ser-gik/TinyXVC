@@ -24,9 +24,9 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "bit_vector.h"
+#include "txvc/bit_vector.h"
 
-#include "log.h"
+#include "txvc/log.h"
 
 #include <unistd.h>
 #include <fcntl.h>

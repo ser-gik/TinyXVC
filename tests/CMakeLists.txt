@@ -5,6 +5,7 @@ add_txvc_executable(Tests
     another.c
     DEPENDS
     TestSupport
+    Txvc
     )
 add_custom_target(UnitTest
     Tests

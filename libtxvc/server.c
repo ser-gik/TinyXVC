@@ -24,9 +24,9 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "server.h"
+#include "txvc/server.h"
 
-#include "log.h"
+#include "txvc/log.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

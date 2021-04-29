@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Sergey Guralnik
+ * Copyright 2021 Sergey Guralnik
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -26,31 +26,17 @@
 
 #pragma once
 
-#include "txvc_defs.h"
-
-#include <stdbool.h>
 #include <stdint.h>
+#include <stdbool.h>
 
-struct txvc_driver {
-    const char *name;
-    const char *help;
+#include "defs.h"
 
-    bool (*activate)(const char **argNames, const char **argValues);
-    bool (*deactivate)(void);
+extern void txvc_bit_vector_random(uint8_t* out, int outSz);
 
-    int (*max_vector_bits)(void);
-    int (*set_tck_period)(int tckPeriodNs);
-    bool (*shift_bits)(int numBits,
-            const uint8_t *tmsVector,
-            const uint8_t *tdiVector,
-            uint8_t *tdoVector
-            );
-} TXVC_ALIGNED(16);
+extern bool txvc_bit_vector_equal(
+        const uint8_t* lhs, int lhsStart, int lhsEnd,
+        const uint8_t* rhs, int rhsStart, int rhsEnd);
 
-#define TXVC_DRIVER(name) \
-    static const struct txvc_driver txvc_driver_ ## name \
-        TXVC_SECTION(.txvc_driver) TXVC_USED TXVC_ALIGNED(16)
-
-extern const struct txvc_driver* txvc_enumerate_drivers(
-        bool (*fn)(const struct txvc_driver *d, const void *extra), const void *extra);
+extern int txvc_bit_vector_format_lsb(char* out, int outSz, const uint8_t* vector, int start, int end);
+extern int txvc_bit_vector_format_msb(char* out, int outSz, const uint8_t* vector, int start, int end);
 

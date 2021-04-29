@@ -24,8 +24,8 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "driver.h"
-#include "txvc_defs.h"
+#include "txvc/driver.h"
+#include "txvc/defs.h"
 
 #include <stddef.h>
 #include <string.h>
