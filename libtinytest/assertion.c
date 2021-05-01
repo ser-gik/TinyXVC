@@ -27,16 +27,14 @@
 #include "ttest/test.h"
 
 #include <string.h>
-#include <stdio.h>
 
 void check_boolean(const char *file, int line, bool isFatal,
         bool expected, bool actual, const char* expression) {
     if (expected == actual) {
         return;
     }
-    char msg[128];
-    snprintf(msg, sizeof(msg), "<%s> is not <%s>", expression, expected ? "true" : "false");
-    ttest_mark_current_case_as_failed(file, line, msg, isFatal);
+    ttest_mark_current_case_as_failed(file, line, isFatal,
+            "<%s> is not <%s>", expression, expected ? "true" : "false");
 }
 
 #define DEFINE_CHECK_EQUAL_FOR_INTEGRAL(type, suffix, formatSpec) \
@@ -46,11 +44,10 @@ void check_equal_ ## suffix(const char *file, int line, bool isFatal, bool inver
     if ((!invert && eq) || (invert && !eq)) { \
         return; \
     } \
-    char msg[128]; \
-    snprintf(msg, sizeof(msg), "%sexpected <" formatSpec "> but got <" formatSpec ">", \
+    ttest_mark_current_case_as_failed(file, line, isFatal, \
+            "%sexpected <" formatSpec "> but got <" formatSpec ">", \
             invert ? "not " : "", \
             expected, actual); \
-    ttest_mark_current_case_as_failed(file, line, msg, isFatal); \
 }
 
 DEFINE_CHECK_EQUAL_FOR_INTEGRAL(char, char, "%c")
@@ -65,10 +62,8 @@ void check_equal_cstr(const char *file, int line, bool isFatal, bool invert,
     if ((!invert && eq) || (invert && !eq)) {
         return;
     }
-    char msg[128];
-    snprintf(msg, sizeof(msg), "%sexpected <%s> but got <%s>",
+    ttest_mark_current_case_as_failed(file, line, isFatal, "%sexpected <%s> but got <%s>",
             invert ? "not " : "",
             expected.data, actual.data);
-    ttest_mark_current_case_as_failed(file, line, msg, isFatal);
 }
 

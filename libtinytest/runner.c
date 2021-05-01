@@ -26,24 +26,60 @@
 
 #include "ttest/test.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
-struct test gTinyTest = {
+struct strbuf {
+    char str[4096];
+    size_t sz;
+};
+
+static void strbuf_reset(struct strbuf *sb) {
+    sb->str[0] = '\0';
+    sb->sz = 0u;
+}
+
+static void strbuf_vappend(struct strbuf *sb, const char *format, va_list ap) {
+    if (sizeof(sb->str) <= sb->sz + 1u) {
+        return;
+    }
+    size_t avail = sizeof(sb->str) - sb->sz;
+    int res = vsnprintf(sb->str + sb->sz, avail, format, ap);
+    if (res < 0) {
+        return;
+    }
+    size_t len = (size_t)res;
+    sb->sz += len > avail ? avail : len;
+}
+
+static void strbuf_append(struct strbuf *sb, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    strbuf_vappend(sb, format, ap);
+    va_end(ap);
+}
+
+#define MAX_SUITES 100
+
+struct test {
+    struct test_suite *suites[MAX_SUITES];
+    int numSuites;
+    int numFailedCases;
+    int numCasesTotal;
+} gTinyTest = {
     .numSuites = 0,
     .numFailedCases = 0,
     .numCasesTotal = 0,
 };
 
-#define MAX_FAILED_TEST_MESSAGE 4096
-
 static struct test_context {
     jmp_buf restorePoint;
     bool failed;
-    char messages[MAX_FAILED_TEST_MESSAGE];
-    int messagesHead;
+    struct strbuf messages;
 } gTestCaseContext;
 
 static void run_case(struct test_suite *suite, struct test_case *case_) {
@@ -52,8 +88,7 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
     {
         struct test_context *ctx = &gTestCaseContext;
         ctx->failed = false;
-        ctx->messages[0] = '\0';
-        ctx->messagesHead = 0;
+        strbuf_reset(&ctx->messages);
     }
     if (setjmp(gTestCaseContext.restorePoint) == 0) {
         case_->testFn();
@@ -62,7 +97,7 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
         struct test_context *ctx = &gTestCaseContext;
         if (ctx->failed) {
             printf("FAILED\n");
-            fputs(ctx->messages, stdout);
+            fputs(ctx->messages.str, stdout);
             gTinyTest.numFailedCases++;
         } else {
             printf("OK\n");
@@ -71,18 +106,36 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
     printf("\n");
 }
 
-void ttest_mark_current_case_as_failed(const char *file, int line, const char* message, bool isFatal) {
+void ttest_private_register_suite(struct test_suite *suite) {
+    if (gTinyTest.numSuites < MAX_SUITES) {
+        gTinyTest.suites[gTinyTest.numSuites++] = suite;
+    } else {
+        fprintf(stderr, "Too many suites\n");
+        abort();
+    }
+}
+
+void ttest_private_register_case(struct test_suite *suite, struct test_case *case_) {
+    if (suite->numCases < MAX_CASES_PER_SUITE) {
+        suite->cases[suite->numCases++] = case_;
+    } else {
+        fprintf(stderr, "Too many cases\n");
+        abort();
+    }
+}
+
+void ttest_mark_current_case_as_failed(const char *file, int line, bool isFatal,
+        const char* format, ...) {
     struct test_context *ctx = &gTestCaseContext;
     ctx->failed = true;
-    int avail = MAX_FAILED_TEST_MESSAGE - ctx->messagesHead - 1;
-    if (avail > 0) {
-        int msgLen = snprintf(ctx->messages + ctx->messagesHead, avail,
-                "%s:%d: %s\n", file, line, message);
-        ctx->messagesHead += msgLen;
-        if (ctx->messagesHead > MAX_FAILED_TEST_MESSAGE) {
-            ctx->messagesHead = MAX_FAILED_TEST_MESSAGE;
-        }
+    strbuf_append(&ctx->messages, "%s:%d: ", file, line);
+    {
+        va_list ap;
+        va_start(ap, format);
+        strbuf_vappend(&ctx->messages, format, ap);
+        va_end(ap);
     }
+    strbuf_append(&ctx->messages, "\n");
     if (isFatal) {
         longjmp(gTestCaseContext.restorePoint, 1);
     }

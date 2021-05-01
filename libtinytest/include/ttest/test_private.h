@@ -39,16 +39,8 @@ struct test_suite {
     int numCases;
 };
 
-#define MAX_SUITES 100
-
-struct test {
-    struct test_suite *suites[MAX_SUITES];
-    int numSuites;
-    int numFailedCases;
-    int numCasesTotal;
-};
-
-extern struct test gTinyTest;
+void ttest_private_register_suite(struct test_suite *suite);
+void ttest_private_register_case(struct test_suite *suite, struct test_case *case_);
 
 #ifdef __GNUC__
 #define ATTR_GLOBAL_CTOR __attribute__((constructor))

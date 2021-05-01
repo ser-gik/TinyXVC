@@ -47,17 +47,13 @@
  *
  * Suite is registered automatically.
  */
-#define TEST_SUITE(suiteName) \
-    static struct test_suite gTestSuite = { \
-        .name = #suiteName, \
-        .numCases = 0, \
-    }; \
-    ATTR_GLOBAL_CTOR static void registerSuite(void) { \
-        if (gTinyTest.numSuites < MAX_SUITES) { \
-            gTinyTest.suites[gTinyTest.numSuites++] = &gTestSuite; \
-        } else { \
-            fprintf(stderr, "Too many suites\n"); abort(); \
-        } \
+#define TEST_SUITE(suiteName)                                                                      \
+    static struct test_suite gTestSuite = {                                                        \
+        .name = #suiteName,                                                                        \
+        .numCases = 0,                                                                             \
+    };                                                                                             \
+    ATTR_GLOBAL_CTOR static void registerSuite(void) {                                             \
+        ttest_private_register_suite(&gTestSuite);                                                 \
     }
 
 /**
@@ -70,16 +66,14 @@
  * Case is registered automatically.
  */
 #define TEST_CASE(caseName) \
-    static void caseName(void); \
-    static struct test_case gTestCase_ ## caseName = {\
-        .name = #caseName, \
-        .testFn = caseName, \
-    }; \
-    ATTR_GLOBAL_CTOR static void registerCase_ ## caseName(void) { \
-        if (gTestSuite.numCases < MAX_CASES_PER_SUITE) \
-            gTestSuite.cases[gTestSuite.numCases++] = &gTestCase_ ## caseName; \
-        else { fprintf(stderr, "Too many cases\n"); abort(); } \
-    } \
+    static void caseName(void);                                                                    \
+    static struct test_case gTestCase_ ## caseName = {                                             \
+        .name = #caseName,                                                                         \
+        .testFn = caseName,                                                                        \
+    };                                                                                             \
+    ATTR_GLOBAL_CTOR static void registerCase_ ## caseName(void) {                                 \
+        ttest_private_register_case(&gTestSuite, &gTestCase_ ## caseName);                         \
+    }                                                                                              \
     static void caseName(void)
 
 /**
@@ -87,11 +81,13 @@
  * Note that it should only be called on the same thread where test case was invoked. (Though
  * this doesn't preclude user from testing multithreaded code in general.)
  * When 'isFatal' is 'true' - test case will be interrupted immediately, with no executing
- * any code after this call. At the same time this does not affect executing of other cases and suites.
+ * any code after this call. At the same time this does not affect executing of other cases and
+ * suites.
  *
  * This is a low level API, use it if none of assertion APIs below suffice your needs.
  */
-void ttest_mark_current_case_as_failed(const char *file, int line, const char* message, bool isFatal);
+void ttest_mark_current_case_as_failed(const char *file, int line, bool isFatal,
+        const char* format, ...);
 
 /**
  * Call this function once to execute all defined test cases.
@@ -111,8 +107,8 @@ bool ttest_run_all(void);
 void check_boolean(const char *file, int line, bool isFatal,
         bool expected, bool actual, const char* expression);
 
-#define CHECK_BOOLEAN(expr, expected, isFatal) check_boolean(__FILE__, __LINE__, isFatal, \
-        expected, (expr), #expr)
+#define CHECK_BOOLEAN(expr, expected, isFatal)                                                     \
+                            check_boolean(__FILE__, __LINE__, isFatal, expected, (expr), #expr)
 #define ASSERT_TRUE(expr) CHECK_BOOLEAN(expr, true, true)
 #define EXPECT_TRUE(expr) CHECK_BOOLEAN(expr, true, false)
 #define ASSERT_FALSE(expr) CHECK_BOOLEAN(expr, false, true)
@@ -134,14 +130,14 @@ struct cstr { const char *data; };
 void check_equal_cstr(const char *file, int line, bool isFatal, bool invert,
         struct cstr expected, struct cstr actual);
 
-#define CHECK_EQUAL(expected, actual, isFatal, invert) \
-    _Generic((expected), \
-            char: check_equal_char, \
-            signed int: check_equal_sint, \
-            unsigned int: check_equal_uint, \
-            signed long: check_equal_slong, \
-            unsigned long: check_equal_ulong, \
-            struct cstr: check_equal_cstr) \
+#define CHECK_EQUAL(expected, actual, isFatal, invert)                                             \
+    _Generic((expected),                                                                           \
+            char: check_equal_char,                                                                \
+            signed int: check_equal_sint,                                                          \
+            unsigned int: check_equal_uint,                                                        \
+            signed long: check_equal_slong,                                                        \
+            unsigned long: check_equal_ulong,                                                      \
+            struct cstr: check_equal_cstr)                                                         \
             (__FILE__, __LINE__, isFatal, invert, expected, actual)
 #define ASSERT_EQ(expected, actual) CHECK_EQUAL(expected, actual, true, false)
 #define EXPECT_EQ(expected, actual) CHECK_EQUAL(expected, actual, false, false)

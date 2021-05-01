@@ -77,3 +77,4 @@ TEST_CASE(Formatting) {
 #undef FORMAT_LSB
 #undef FORMAT_MSB
 }
+
