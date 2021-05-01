@@ -32,7 +32,7 @@
 
 TEST_SUITE(BitVector)
 
-TEST_CASE(Comparison) {
+TEST_CASE(CompareVectors_ResultAsExpected) {
 #define VEC(start, end, ...) (uint8_t[]){ __VA_ARGS__ }, start, end
     EXPECT_TRUE(txvc_bit_vector_equal(VEC(0, 8, 0x00), VEC(0, 8, 0x00)));
     EXPECT_TRUE(txvc_bit_vector_equal(VEC(0, 8, 0xff), VEC(0, 8, 0xff)));
@@ -44,7 +44,7 @@ TEST_CASE(Comparison) {
 #undef VEC
 }
 
-TEST_CASE(Formatting) {
+TEST_CASE(FormatVectorInDifferentDirections_ResultAsExpected) {
     char formatted[128];
 #define FORMAT_LSB(start, end, ...) \
     txvc_bit_vector_format_lsb(formatted, sizeof(formatted), (uint8_t[]){ __VA_ARGS__ }, start, end)
