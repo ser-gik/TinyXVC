@@ -93,15 +93,21 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
     printf("[%s] [%s] - ", vSuite->name, vCase->name);
     vCtx->failed = false;
     strbuf_reset(&vCtx->messages);
-    if (vSuite->beforeCaseFn) {
-        vSuite->beforeCaseFn();
-    }
+
     if (setjmp(vCtx->restorePoint) == 0) {
-        vCase->testFn();
+        if (vSuite->beforeCaseFn) {
+            vSuite->beforeCaseFn();
+        }
+        if (setjmp(vCtx->restorePoint) == 0) {
+            vCase->testFn();
+        }
+        if (setjmp(vCtx->restorePoint) == 0) {
+            if (vSuite->afterCaseFn) {
+                vSuite->afterCaseFn();
+            }
+        }
     }
-    if (vSuite->afterCaseFn) {
-        vSuite->afterCaseFn();
-    }
+
     if (vCtx->failed) {
         printf("FAILED\n");
         fputs(vCtx->messages.str, stdout);

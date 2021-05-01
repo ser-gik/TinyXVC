@@ -61,6 +61,11 @@
 /**
  * User-defined actions that should be executed before/after each test case in the current suite.
  * These macros must not be used more than one time per translation unit.
+ *
+ * Any kind of assertions (see below) can be used in both pre- and post-actions.
+ * Note that "fatal" failed check in pre-action will interrupt the whole case so that test itself
+ * and post-action will be cancelled. At the same time "fatal" failed check in the test will not
+ * cancel post-action.
  */
 #define DO_BEFORE_EACH_CASE()                                                                      \
     static void doBeforeEachCase(void);                                                            \
@@ -107,6 +112,11 @@
  */
 void ttest_mark_current_case_as_failed(const char *file, int line, bool isFatal,
         const char* format, ...);
+
+#define FAIL_NON_FATAL(format, ...)                                                                \
+    ttest_mark_current_case_as_failed(__FILE__, __LINE__, false, format, ## __VA_ARGS__)
+#define FAIL_FATAL(format, ...)                                                                    \
+    ttest_mark_current_case_as_failed(__FILE__, __LINE__, true, format, ## __VA_ARGS__)
 
 /**
  * Call this function once to execute all defined test cases.
