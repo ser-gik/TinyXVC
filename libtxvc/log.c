@@ -50,6 +50,7 @@ static const char gLevelNames[] = {
 };
 static long long gOriginUs;
 static char *gTagSpec;
+static unsigned gCurConfigId = 0u;
 
 static long long getTimeUs(void) {
     struct timespec ts;
@@ -72,15 +73,16 @@ static bool tag_disabled(struct txvc_log_tag *tag) {
     return false;
 }
 
-void txvc_log_init(const char *tagSpec, enum txvc_log_level level) {
+void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel) {
     if (!gTagSpec) free(gTagSpec);
     gTagSpec = strdup(tagSpec);
-    gMinLevel = level;
+    gMinLevel = minLevel;
+    gCurConfigId++;
 }
 
 bool txvc_log_tag_enabled(struct txvc_log_tag *tag) {
-    if (tag->isEnabled != txvc_log_tag_enabled) {
-        /* This tag is resolved already */
+    if (tag->curConfigId == gCurConfigId && tag->isEnabled != txvc_log_tag_enabled) {
+        /* This tag is resolved already according to current config. */
         return tag->isEnabled(tag);
     }
     /*
@@ -110,6 +112,7 @@ bool txvc_log_tag_enabled(struct txvc_log_tag *tag) {
                 gTagSpec, tag->str);
     }
 
+    tag->curConfigId = gCurConfigId;
     if (enabled) {
         tag->isEnabled = tag_enabled;
         return true;
@@ -124,7 +127,8 @@ bool txvc_log_level_enabled(enum txvc_log_level level) {
 }
 
 void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...) {
-    if (level < gMinLevel || !tag->isEnabled(tag)) {
+    if (!txvc_log_level_enabled(level)
+            || (!txvc_log_tag_enabled(tag) && level != LOG_LEVEL_FATAL)) {
         return;
     }
 

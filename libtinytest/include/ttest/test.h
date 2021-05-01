@@ -38,7 +38,7 @@
  */
 
 /**
- * Defines test suite. There can be only one test suite per translation unit.
+ * Defines test suite. There must be exactly one test suite per translation unit.
  * Put this macro at the top of your source, before you start adding test cases:
  *
  * #include "ttest/test.h"
@@ -51,10 +51,29 @@
     static struct test_suite gTestSuite = {                                                        \
         .name = #suiteName,                                                                        \
         .numCases = 0,                                                                             \
+        .beforeCaseFn = 0,                                                                         \
+        .afterCaseFn = 0,                                                                          \
     };                                                                                             \
     ATTR_GLOBAL_CTOR static void registerSuite(void) {                                             \
         ttest_private_register_suite(&gTestSuite);                                                 \
     }
+
+/**
+ * User-defined actions that should be executed before/after each test case in the current suite.
+ * These macros must not be used more than one time per translation unit.
+ */
+#define DO_BEFORE_EACH_CASE()                                                                      \
+    static void doBeforeEachCase(void);                                                            \
+    ATTR_GLOBAL_CTOR static void registerBeforeFn(void) {                                          \
+        gTestSuite.beforeCaseFn = doBeforeEachCase;                                                \
+    }                                                                                              \
+    static void doBeforeEachCase(void)
+#define DO_AFTER_EACH_CASE()                                                                       \
+    static void doAfterEachCase(void);                                                             \
+    ATTR_GLOBAL_CTOR static void registerAfterFn(void) {                                           \
+        gTestSuite.afterCaseFn = doAfterEachCase;                                                  \
+    }                                                                                              \
+    static void doAfterEachCase(void)
 
 /**
  * Defines a test case in a current test suite:

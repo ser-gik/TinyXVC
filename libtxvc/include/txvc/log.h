@@ -38,18 +38,20 @@ enum txvc_log_level {
     LOG_LEVEL_FATAL,
 };
 
-extern void txvc_log_init(const char *tagSpec, enum txvc_log_level level);
+extern void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel);
 
 extern bool txvc_log_level_enabled(enum txvc_log_level level);
 
 struct txvc_log_tag {
-    bool (*isEnabled)(struct txvc_log_tag* tag);
     char str[16];
+    bool (*isEnabled)(struct txvc_log_tag* tag);
+    unsigned curConfigId;
 };
 
 #define TXVC_LOG_TAG_INITIALIZER(tag) {                                                            \
-        .isEnabled = txvc_log_tag_enabled,                                                         \
         .str = #tag,                                                                               \
+        .isEnabled = txvc_log_tag_enabled,                                                         \
+        .curConfigId = 0u,                                                                         \
     }
 
 #define TXVC_DEFAULT_LOG_TAG(tag)                                                                  \

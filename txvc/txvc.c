@@ -247,7 +247,7 @@ int main(int argc, char**argv) {
         return EXIT_FAILURE;
     }
 
-    txvc_log_init(opts.logTagSpec ? opts.logTagSpec : DEFAULT_LOG_TAG_SPEC,
+    txvc_log_configure(opts.logTagSpec ? opts.logTagSpec : DEFAULT_LOG_TAG_SPEC,
                     opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
     if (opts.help) {
         printUsage(argv[0], true);

@@ -25,6 +25,7 @@
  */
 
 #include "ttest/test.h"
+#include "ttest/test_private.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -83,25 +84,30 @@ static struct test_context {
 } gTestCaseContext;
 
 static void run_case(struct test_suite *suite, struct test_case *case_) {
+    /* Use volatile version of locals to be sure that setjmp/longjmp won't clobber them */
+    struct test_suite * volatile vSuite = suite;
+    struct test_case * volatile vCase = case_;
+    struct test_context * volatile vCtx = &gTestCaseContext;
+
     gTinyTest.numCasesTotal++;
-    printf("[%s] [%s] - ", suite->name, case_->name);
-    {
-        struct test_context *ctx = &gTestCaseContext;
-        ctx->failed = false;
-        strbuf_reset(&ctx->messages);
+    printf("[%s] [%s] - ", vSuite->name, vCase->name);
+    vCtx->failed = false;
+    strbuf_reset(&vCtx->messages);
+    if (vSuite->beforeCaseFn) {
+        vSuite->beforeCaseFn();
     }
-    if (setjmp(gTestCaseContext.restorePoint) == 0) {
-        case_->testFn();
+    if (setjmp(vCtx->restorePoint) == 0) {
+        vCase->testFn();
     }
-    {
-        struct test_context *ctx = &gTestCaseContext;
-        if (ctx->failed) {
-            printf("FAILED\n");
-            fputs(ctx->messages.str, stdout);
-            gTinyTest.numFailedCases++;
-        } else {
-            printf("OK\n");
-        }
+    if (vSuite->afterCaseFn) {
+        vSuite->afterCaseFn();
+    }
+    if (vCtx->failed) {
+        printf("FAILED\n");
+        fputs(vCtx->messages.str, stdout);
+        gTinyTest.numFailedCases++;
+    } else {
+        printf("OK\n");
     }
     printf("\n");
 }
@@ -110,8 +116,7 @@ void ttest_private_register_suite(struct test_suite *suite) {
     if (gTinyTest.numSuites < MAX_SUITES) {
         gTinyTest.suites[gTinyTest.numSuites++] = suite;
     } else {
-        fprintf(stderr, "Too many suites\n");
-        abort();
+        ttest_private_abort("Too many suites");
     }
 }
 
@@ -119,9 +124,13 @@ void ttest_private_register_case(struct test_suite *suite, struct test_case *cas
     if (suite->numCases < MAX_CASES_PER_SUITE) {
         suite->cases[suite->numCases++] = case_;
     } else {
-        fprintf(stderr, "Too many cases\n");
-        abort();
+        ttest_private_abort("Too many cases");
     }
+}
+
+void ttest_private_abort(const char* message) {
+    fprintf(stderr, "%s\n", message);
+    abort();
 }
 
 void ttest_mark_current_case_as_failed(const char *file, int line, bool isFatal,

@@ -33,7 +33,7 @@
 int main(int argc, const char **argv) {
     (void) argc;
     (void) argv;
-    txvc_log_init("all-", LOG_LEVEL_FATAL); /* Silent logs so they won't mix with runner's output. */
+    txvc_log_configure("all-", LOG_LEVEL_FATAL); /* Silent logs so they won't mix with runner's output. */
     return ttest_run_all() ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
