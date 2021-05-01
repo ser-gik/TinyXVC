@@ -95,16 +95,12 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
     strbuf_reset(&vCtx->messages);
 
     if (setjmp(vCtx->restorePoint) == 0) {
-        if (vSuite->beforeCaseFn) {
-            vSuite->beforeCaseFn();
-        }
+        vSuite->beforeCaseFn();
         if (setjmp(vCtx->restorePoint) == 0) {
             vCase->testFn();
         }
         if (setjmp(vCtx->restorePoint) == 0) {
-            if (vSuite->afterCaseFn) {
-                vSuite->afterCaseFn();
-            }
+            vSuite->afterCaseFn();
         }
     }
 
@@ -137,6 +133,9 @@ void ttest_private_register_case(struct test_suite *suite, struct test_case *cas
 void ttest_private_abort(const char* message) {
     fprintf(stderr, "%s\n", message);
     abort();
+}
+
+void ttest_noop(void) {
 }
 
 void ttest_mark_current_case_as_failed(const char *file, int line, bool isFatal,

@@ -44,6 +44,7 @@ struct test_suite {
 void ttest_private_register_suite(struct test_suite *suite);
 void ttest_private_register_case(struct test_suite *suite, struct test_case *case_);
 void ttest_private_abort(const char* message);
+void ttest_noop(void);
 
 #ifdef __GNUC__
 #define ATTR_GLOBAL_CTOR __attribute__((constructor))

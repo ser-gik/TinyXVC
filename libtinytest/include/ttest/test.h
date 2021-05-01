@@ -51,8 +51,8 @@
     static struct test_suite gTestSuite = {                                                        \
         .name = #suiteName,                                                                        \
         .numCases = 0,                                                                             \
-        .beforeCaseFn = 0,                                                                         \
-        .afterCaseFn = 0,                                                                          \
+        .beforeCaseFn = ttest_noop,                                                                \
+        .afterCaseFn = ttest_noop,                                                                 \
     };                                                                                             \
     ATTR_GLOBAL_CTOR static void registerSuite(void) {                                             \
         ttest_private_register_suite(&gTestSuite);                                                 \
