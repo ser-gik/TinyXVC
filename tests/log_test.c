@@ -31,7 +31,7 @@
 TEST_SUITE(Logger)
 
 DO_AFTER_EACH_CASE() {
-    txvc_log_configure("all-", LOG_LEVEL_FATAL); /* Turn logger off to not clobber IO stream */
+    txvc_log_configure("all+", LOG_LEVEL_ERROR);
 }
 
 TEST_CASE(MinimalLogLevelIsSet_AllBelowItAreDisabled) {

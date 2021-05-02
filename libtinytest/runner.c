@@ -90,7 +90,6 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
     struct test_context * volatile vCtx = &gTestCaseContext;
 
     gTinyTest.numCasesTotal++;
-    printf("[%s] [%s] - ", vSuite->name, vCase->name);
     vCtx->failed = false;
     strbuf_reset(&vCtx->messages);
 
@@ -104,12 +103,10 @@ static void run_case(struct test_suite *suite, struct test_case *case_) {
         }
     }
 
+    printf("[%s] [%s] - %s\n", vSuite->name, vCase->name, vCtx->failed ? "FAILED" : "OK");
     if (vCtx->failed) {
-        printf("FAILED\n");
         fputs(vCtx->messages.str, stdout);
         gTinyTest.numFailedCases++;
-    } else {
-        printf("OK\n");
     }
     printf("\n");
 }

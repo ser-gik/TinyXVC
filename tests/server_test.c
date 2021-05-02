@@ -36,6 +36,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <errno.h>
 
 TEST_SUITE(Server)
 
@@ -112,7 +114,10 @@ DO_BEFORE_EACH_CASE() {
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = inet_addr(gServerAddr);
     addr.sin_port = htons(gServerPort);
-    ASSERT_TRUE(connect(gClientSocket, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+    int connectRes = connect(gClientSocket, (struct sockaddr*)&addr, sizeof(addr));
+    if (connectRes != 0) {
+        FAIL_FATAL("Can not connect to %s:%d - %s", gServerAddr, gServerPort, strerror(errno));
+    }
 }
 
 DO_AFTER_EACH_CASE() {
@@ -132,6 +137,8 @@ TEST_CASE(RequestInfo_DriverIsCalledAndResponseIsReceived) {
     const size_t expectedResponseSz = sizeof(expectedResponse) - 1;
     char responseBuffer[64];
 
+    ASSERT_EQ(0, gDriverMock.callCountMaxVectorBit);
+
     ASSERT_EQ(send(gClientSocket, "getinfo:", 8, 0), 8);
     ASSERT_EQ(recv(gClientSocket, responseBuffer, expectedResponseSz, 0), expectedResponseSz);
     responseBuffer[expectedResponseSz] = '\0';
@@ -147,6 +154,8 @@ TEST_CASE(RequestInfo_DriverIsCalledAndResponseIsReceived) {
 
 TEST_CASE(RequestTckPeriodChange_DriverIsCalledAndResponseIsReceived) {
     uint8_t response[4];
+
+    ASSERT_EQ(0, gDriverMock.callCountSetTckPeriod);
 
     ASSERT_EQ(send(gClientSocket, &(uint8_t []){'s', 'e', 't', 't', 'c', 'k', ':', 100, 0, 0, 0, },
                 11, 0), 11);
