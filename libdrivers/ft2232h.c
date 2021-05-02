@@ -156,7 +156,7 @@ static bool load_config(int numArg, const char **argNames, const char **argValue
         }
         PARAM_LIST_ITEMS(CONVERT_AND_SET_IF_MATCHES)
 #undef CONVERT_AND_SET_IF_MATCHES
-        WARN("Unknown parameter: \"%s=%s\"\n", argNames[i], argValues[i]);
+        WARN("Unknown parameter: \"%s\"=\"%s\"\n", argNames[i], argValues[i]);
     }
 
 #define BAIL_IF_NOT_VALID(name, configField, converterFunc, validation, descr)                     \
