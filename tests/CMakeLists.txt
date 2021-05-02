@@ -5,6 +5,7 @@ add_txvc_executable(Tests
         bit_vector_test.c
         log_test.c
         server_test.c
+        profile_test.c
     DEPENDS
         TinyTest
         Txvc

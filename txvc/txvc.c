@@ -28,6 +28,7 @@
 #include "txvc/driver.h"
 #include "txvc/log.h"
 #include "txvc/server.h"
+#include "txvc/profile.h"
 #include "txvc/defs.h"
 
 #include "drivers/drivers.h"
@@ -35,7 +36,6 @@
 #include <unistd.h>
 
 #include <limits.h>
-#include <string.h>
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
@@ -192,52 +192,6 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
     return strcmp(name, d->name) != 0;
 }
 
-static const struct txvc_driver *activate_driver(const char *profile) {
-    /*
-     * Copy the whole profile string in a temporary buffer and cut it onto name,value chuncks.
-     * Expected format is:
-     * <driver name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...
-     */
-    char args[1024];
-    strncpy(args, profile, sizeof(args));
-    args[sizeof(args) - 1] = '\0';
-
-    const char *name = args;
-    const char *argNames[32] = { NULL };
-    const char *argValues[32] = { NULL };
-
-    char* cur = strchr(args, ':');
-    if (cur) {
-        *cur++ = '\0';
-        for (size_t i = 0; i < sizeof(argNames) / sizeof(argNames[0]) && cur && *cur; i++) {
-            char* tmp = cur;
-            cur = strchr(cur, ',');
-            if (cur) {
-                *cur++ = '\0';
-            }
-            argNames[i] = tmp;
-            tmp = strchr(tmp, '=');
-            if (tmp) {
-                *tmp++ = '\0';
-                argValues[i] = tmp;
-            } else {
-                argValues[i] = "";
-            }
-        }
-    }
-
-    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, name);
-    if (driver) {
-        if (!driver->activate(argNames, argValues)) {
-            ERROR("Failed to activate driver \"%s\"\n", name);
-            driver = NULL;
-        }
-    } else {
-        ERROR("Can not find driver \"%s\"\n", name);
-    }
-    return driver;
-}
-
 int main(int argc, char**argv) {
     listen_for_user_interrupt();
 
@@ -256,12 +210,13 @@ int main(int argc, char**argv) {
     if (!opts.profile) {
         fprintf(stderr, "Profile is missing\n");
         return EXIT_FAILURE;
-    }
-    const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
-    if (alias) {
-        INFO("Found alias %s (%s),\n", opts.profile, alias->description);
-        INFO("using profile %s\n", alias->profile);
-        opts.profile = alias->profile;
+    } else {
+        const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
+        if (alias) {
+            INFO("Found alias %s (%s),\n", opts.profile, alias->description);
+            INFO("using profile %s\n", alias->profile);
+            opts.profile = alias->profile;
+        }
     }
     if (!opts.serverAddr) {
         opts.serverAddr = DEFAULT_SERVER_ADDR;
@@ -270,10 +225,21 @@ int main(int argc, char**argv) {
         fprintf(stderr, "Bad initial TCK period\n");
         return EXIT_FAILURE;
     }
-    const struct txvc_driver *driver = activate_driver(opts.profile);
-    if (!driver) {
+
+    struct txvc_backend_profile profile;
+    if (!txvc_backend_profile_parse(opts.profile, &profile)) {
         return EXIT_FAILURE;
     }
+    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, profile.driverName);
+    if (!driver) {
+        ERROR("Can not find driver \"%s\"\n", profile.driverName);
+        return EXIT_FAILURE;
+    }
+    if (!driver->activate(profile.numArg, profile.argKeys, profile.argValues)) {
+        ERROR("Failed to activate driver \"%s\"\n", profile.driverName);
+        return EXIT_FAILURE;
+    }
+
     if (opts.initialTckPeriodNanos > 0
             && driver->set_tck_period(opts.initialTckPeriodNanos) != opts.initialTckPeriodNanos) {
         WARN("Can't set TCK period to %dns\n", opts.initialTckPeriodNanos);

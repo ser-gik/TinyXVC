@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Sergey Guralnik
+ * Copyright 2021 Sergey Guralnik
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -24,46 +24,50 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "txvc/driver.h"
-#include "txvc/defs.h"
+#include "txvc/profile.h"
 
-#include <stddef.h>
+#include "txvc/log.h"
+
 #include <string.h>
 
-static bool activate(int numArg, const char **argNames, const char **argValues){
-    TXVC_UNUSED(numArg);
-    TXVC_UNUSED(argNames);
-    TXVC_UNUSED(argValues);
+TXVC_DEFAULT_LOG_TAG(profile);
+
+bool txvc_backend_profile_parse(const char *profileStr, struct txvc_backend_profile *out) {
+    size_t len = strlen(profileStr);
+    if (len > sizeof(out->privateScratchpad) - 1) {
+        ERROR("Too long profile spec\n");
+        return false;
+    }
+    memcpy(out->privateScratchpad, profileStr, len);
+    out->privateScratchpad[len] = '\0';
+
+    out->driverName = out->privateScratchpad;
+    out->numArg = 0;
+
+    char* cur = strchr(out->privateScratchpad, ':');
+    if (cur) {
+        *cur++ = '\0';
+        while (cur && *cur) {
+            if (out->numArg >= sizeof(out->argKeys) / sizeof(out->argKeys[0])) {
+                ERROR("Too many profile args\n");
+                return false;
+            }
+            char* tmp = cur;
+            cur = strchr(cur, ',');
+            if (cur) {
+                *cur++ = '\0';
+            }
+            out->argKeys[out->numArg] = tmp;
+            tmp = strchr(tmp, '=');
+            if (tmp) {
+                *tmp++ = '\0';
+                out->argValues[out->numArg] = tmp;
+            } else {
+                out->argValues[out->numArg] = "";
+            }
+            out->numArg++;
+        }
+    }
     return true;
 }
-
-static bool deactivate(void){
-    return true;
-}
-
-static int max_vector_bits(void){
-    return 1024;
-}
-
-static int set_tck_period(int tckPeriodNs){
-    return tckPeriodNs;
-}
-
-static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
-        uint8_t *tdoVector){
-    TXVC_UNUSED(tmsVector);
-    memcpy(tdoVector, tdiVector, (size_t) (numBits / 8 + !!(numBits % 8)));
-    return true;
-}
-
-const struct txvc_driver driver_echo = {
-    .name = "echo",
-    .help = "Simple loopback driver that forwards TDI vector to TDO. No real device is involved\n"
-            "Parameters:\n   none\n",
-    .activate = activate,
-    .deactivate = deactivate,
-    .max_vector_bits = max_vector_bits,
-    .set_tck_period = set_tck_period,
-    .shift_bits = shift_bits,
-};
 

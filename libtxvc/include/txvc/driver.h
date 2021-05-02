@@ -35,7 +35,7 @@ struct txvc_driver {
     const char *name;
     const char *help;
 
-    bool (*activate)(const char **argNames, const char **argValues);
+    bool (*activate)(int numArg, const char **argNames, const char **argValues);
     bool (*deactivate)(void);
 
     int (*max_vector_bits)(void);

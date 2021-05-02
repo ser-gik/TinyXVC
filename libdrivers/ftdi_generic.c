@@ -96,19 +96,19 @@ struct ft_params {
     X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, "D6 pin role")                        \
     X("d7", d_pins[7], str_to_pin_role, != PIN_ROLE_INVALID, "D7 pin role")                        \
 
-static bool load_config(const char **argNames, const char **argValues, struct ft_params *out) {
+static bool load_config(int numArgs, const char **argNames, const char **argValues, struct ft_params *out) {
     memset(out, 0, sizeof(*out));
     out->channel = -1;
 
-    for (;*argNames; argNames++, argValues++) {
+    for (int i = 0; i < numArgs; i++) {
 #define CONVERT_AND_SET_IF_MATCHES(name, configField, converterFunc, validation, descr)            \
-        if (strcmp(name, *argNames) == 0) {                                                        \
-            out->configField = converterFunc(*argValues);                                          \
+        if (strcmp(name, argNames[i]) == 0) {                                                        \
+            out->configField = converterFunc(argValues[i]);                                          \
             continue;                                                                              \
         }
         PARAM_LIST_ITEMS(CONVERT_AND_SET_IF_MATCHES)
 #undef CONVERT_AND_SET_IF_MATCHES
-        WARN("Unknown parameter: \"%s=%s\"\n", *argNames, *argValues);
+        WARN("Unknown parameter: \"%s=%s\"\n", argNames[i], argValues[i]);
     }
 
 #define BAIL_IF_NOT_VALID(name, configField, converterFunc, validation, descr)                     \
@@ -453,10 +453,10 @@ static bool loopback_test(struct driver* d) {
 }
 
 
-static bool activate(const char **argNames, const char **argValues){
+static bool activate(int numArgs, const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
 
-    if (!load_config(argNames, argValues, &d->params)) return false;
+    if (!load_config(numArgs, argNames, argValues, &d->params)) return false;
 
     struct ftdi_version_info info = ftdi_get_library_version();
     INFO("Using libftdi \"%s %s\"\n", info.version_str, info.snapshot_str);

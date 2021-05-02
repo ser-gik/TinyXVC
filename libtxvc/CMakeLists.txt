@@ -5,6 +5,7 @@ add_txvc_library(Txvc
         jtag_splitter.c
         log.c
         server.c
+        profile.c
     INCDIRS
         include/
     )
