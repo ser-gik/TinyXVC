@@ -155,9 +155,15 @@ void check_equal_ulong(const char *file, int line, bool isFatal, bool invert,
         unsigned long expected, unsigned long actual);
 
 struct cstr { const char *data; };
-#define CSTR(ptr) (struct cstr){ .data = ptr }
+#define CSTR(ptr) ((struct cstr){ .data = (ptr) })
 void check_equal_cstr(const char *file, int line, bool isFatal, bool invert,
         struct cstr expected, struct cstr actual);
+
+struct span { const void *data; unsigned sz; };
+#define SPAN(ptr, size) ((struct span){ .data = (ptr), .sz = (size), })
+void check_equal_span(const char *file, int line, bool isFatal, bool invert,
+        struct span expected, struct span actual);
+
 
 #define CHECK_EQUAL(expected, actual, isFatal, invert)                                             \
     _Generic((expected),                                                                           \
@@ -166,7 +172,8 @@ void check_equal_cstr(const char *file, int line, bool isFatal, bool invert,
             unsigned int: check_equal_uint,                                                        \
             signed long: check_equal_slong,                                                        \
             unsigned long: check_equal_ulong,                                                      \
-            struct cstr: check_equal_cstr)                                                         \
+            struct cstr: check_equal_cstr,                                                         \
+            struct span: check_equal_span)                                                         \
             (__FILE__, __LINE__, isFatal, invert, expected, actual)
 #define ASSERT_EQ(expected, actual) CHECK_EQUAL(expected, actual, true, false)
 #define EXPECT_EQ(expected, actual) CHECK_EQUAL(expected, actual, false, false)

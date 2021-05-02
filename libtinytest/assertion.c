@@ -67,3 +67,41 @@ void check_equal_cstr(const char *file, int line, bool isFatal, bool invert,
             expected.data, actual.data);
 }
 
+void check_equal_span(const char *file, int line, bool isFatal, bool invert,
+        struct span expected, struct span actual) {
+    const bool sameLen = expected.sz == actual.sz;
+    int firstDifferent = -1;
+    const unsigned char * const p = expected.data;
+    const unsigned char * const q = actual.data;
+    if (sameLen) {
+        for (unsigned i = 0; i < expected.sz; i++) {
+            if (p[i] != q[i]) {
+                firstDifferent = i;
+                break;
+            }
+        }
+    }
+
+    const bool eq = sameLen && firstDifferent == -1;
+
+    if (invert) {
+        if (!eq) {
+            return;
+        }
+        ttest_mark_current_case_as_failed(file, line, isFatal,
+                "got identical %u-byte length spans", expected.sz);
+    } else {
+        if (eq) {
+            return;
+        }
+        if (sameLen) {
+            ttest_mark_current_case_as_failed(file, line, isFatal,
+                    "spans differ starting at byte [%d]: expected <%02x> but got <%02x>",
+                    firstDifferent, p[firstDifferent], q[firstDifferent]);
+        } else {
+            ttest_mark_current_case_as_failed(file, line, isFatal,
+                    "expected %u-byte length span but got %u-byte length", expected.sz, actual.sz);
+        }
+    }
+}
+
