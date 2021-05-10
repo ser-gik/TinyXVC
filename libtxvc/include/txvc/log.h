@@ -62,11 +62,6 @@ extern bool txvc_log_tag_enabled(struct txvc_log_tag *tag);
 TXVC_PRINTF_LIKE(3, 4)
 extern void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...);
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
-#endif
-
 #define VERBOSE_ENABLED txvc_log_level_enabled(LOG_LEVEL_VERBOSE)
 #define VERBOSE(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_VERBOSE, (fmt), ## __VA_ARGS__)
 #define INFO(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_INFO, (fmt), ## __VA_ARGS__)
@@ -76,8 +71,4 @@ extern void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const 
 
 #define ALWAYS_ASSERT(cond) \
     do { if (!(cond)) FATAL("Violated condition: \"%s\"\n", #cond); } while (0)
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
 

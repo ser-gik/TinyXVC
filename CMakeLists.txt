@@ -10,7 +10,14 @@ endif()
 find_package(LibFTDI1 NO_MODULE REQUIRED)
 include(${LIBFTDI_USE_FILE})
 
-set(TXVC_C_FLAGS -Wall -Wextra -Wpedantic -Werror -ffunction-sections -fdata-sections)
+set(TXVC_C_FLAGS
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wno-gnu-zero-variadic-macro-arguments
+    -Werror
+    -ffunction-sections
+    -fdata-sections)
 
 function(add_txvc_library target)
     cmake_parse_arguments(ARG
