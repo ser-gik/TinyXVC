@@ -33,25 +33,25 @@
 #include "txvc/defs.h"
 #include "txvc/bit_vector.h"
 
-TXVC_DEFAULT_LOG_TAG(jtag-split);
+TXVC_DEFAULT_LOG_TAG(jtagSplit);
 
 #define JTAG_STATES(X) \
-    X(TestLogicReset) \
-    X(RunTestIdle) \
-    X(SelectDRScan) \
-    X(CaptureDR) \
-    X(ShiftDR) \
-    X(Exit1DR) \
-    X(PauseDR) \
-    X(Exit2DR) \
-    X(UpdateDR) \
-    X(SelectIRScan) \
-    X(CaptureIR) \
-    X(ShiftIR) \
-    X(Exit1IR) \
-    X(PauseIR) \
-    X(Exit2IR) \
-    X(UpdateIR)
+    X(TEST_LOGIC_RESET) \
+    X(RUN_TEST_IDLE) \
+    X(SELECT_DR_SCAN) \
+    X(CAPTURE_DR) \
+    X(SHIFT_DR) \
+    X(EXIT_1_DR) \
+    X(PAUSE_DR) \
+    X(EXIT_2_DR) \
+    X(UPDATE_DR) \
+    X(SELECT_IR_SCAN) \
+    X(CAPTURE_IR) \
+    X(SHIFT_IR) \
+    X(EXIT_1_IR) \
+    X(PAUSE_IR) \
+    X(EXIT_2_IR) \
+    X(UPDATE_IR)
 
 enum jtag_state {
 #define AS_ENUM_MEMBER(name) name,
@@ -76,22 +76,22 @@ static bool tapReset(txvc_jtag_splitter_tms_sender_fn tmsSender, void* tmsSender
 
 static enum jtag_state next_state(enum jtag_state curState, bool tmsHigh) {
     switch (curState) {
-        case TestLogicReset: return tmsHigh ? TestLogicReset : RunTestIdle;
-        case RunTestIdle: return tmsHigh ? SelectDRScan : RunTestIdle;
-        case SelectDRScan: return tmsHigh ? SelectIRScan : CaptureDR;
-        case CaptureDR: return tmsHigh ? Exit1DR : ShiftDR;
-        case ShiftDR: return tmsHigh ? Exit1DR : ShiftDR;
-        case Exit1DR: return tmsHigh ? UpdateDR : PauseDR;
-        case PauseDR: return tmsHigh ? Exit2DR : PauseDR;
-        case Exit2DR: return tmsHigh ? UpdateDR : ShiftDR;
-        case UpdateDR: return tmsHigh ? SelectDRScan : RunTestIdle;
-        case SelectIRScan: return tmsHigh ? TestLogicReset : CaptureIR;
-        case CaptureIR: return tmsHigh ? Exit1IR : ShiftIR;
-        case ShiftIR: return tmsHigh ? Exit1IR : ShiftIR;
-        case Exit1IR: return tmsHigh ? UpdateIR : PauseIR;
-        case PauseIR: return tmsHigh ? Exit2IR : PauseIR;
-        case Exit2IR: return tmsHigh ? UpdateIR : ShiftIR;
-        case UpdateIR: return tmsHigh ? SelectDRScan : RunTestIdle;
+        case TEST_LOGIC_RESET: return tmsHigh ? TEST_LOGIC_RESET : RUN_TEST_IDLE;
+        case RUN_TEST_IDLE: return tmsHigh ? SELECT_DR_SCAN : RUN_TEST_IDLE;
+        case SELECT_DR_SCAN: return tmsHigh ? SELECT_IR_SCAN : CAPTURE_DR;
+        case CAPTURE_DR: return tmsHigh ? EXIT_1_DR : SHIFT_DR;
+        case SHIFT_DR: return tmsHigh ? EXIT_1_DR : SHIFT_DR;
+        case EXIT_1_DR: return tmsHigh ? UPDATE_DR : PAUSE_DR;
+        case PAUSE_DR: return tmsHigh ? EXIT_2_DR : PAUSE_DR;
+        case EXIT_2_DR: return tmsHigh ? UPDATE_DR : SHIFT_DR;
+        case UPDATE_DR: return tmsHigh ? SELECT_DR_SCAN : RUN_TEST_IDLE;
+        case SELECT_IR_SCAN: return tmsHigh ? TEST_LOGIC_RESET : CAPTURE_IR;
+        case CAPTURE_IR: return tmsHigh ? EXIT_1_IR : SHIFT_IR;
+        case SHIFT_IR: return tmsHigh ? EXIT_1_IR : SHIFT_IR;
+        case EXIT_1_IR: return tmsHigh ? UPDATE_IR : PAUSE_IR;
+        case PAUSE_IR: return tmsHigh ? EXIT_2_IR : PAUSE_IR;
+        case EXIT_2_IR: return tmsHigh ? UPDATE_IR : SHIFT_IR;
+        case UPDATE_IR: return tmsHigh ? SELECT_DR_SCAN : RUN_TEST_IDLE;
     }
     TXVC_UNREACHABLE();
 }
@@ -103,7 +103,7 @@ bool txvc_jtag_splitter_init(struct txvc_jtag_splitter* splitter,
         ERROR("Can not reset TAP\n");
         return false;
     }
-    splitter->state = TestLogicReset;
+    splitter->state = TEST_LOGIC_RESET;
     splitter->tmsSender = tmsSender;
     splitter->tmsSenderExtra = tmsSenderExtra;
     splitter->tdiSender = tdiSender;
@@ -116,7 +116,7 @@ bool txvc_jtag_splitter_deinit(struct txvc_jtag_splitter* splitter) {
         ERROR("Can not reset TAP\n");
         return false;
     }
-    splitter->state = TestLogicReset;
+    splitter->state = TEST_LOGIC_RESET;
     return true;
 }
 
@@ -130,26 +130,14 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
         for (; bitIdx < thisRoundEndBitIdx; tmsByte >>= 1, bitIdx++) {
             const bool tmsBit = tmsByte & 1;
             const enum jtag_state nextJtagState = next_state(jtagState, tmsBit);
-            const bool isShift = jtagState == ShiftDR || jtagState == ShiftIR;
-            const bool nextIsShift = nextJtagState == ShiftDR || nextJtagState == ShiftIR;
+            const bool isShift = jtagState == SHIFT_DR || jtagState == SHIFT_IR;
+            const bool nextIsShift = nextJtagState == SHIFT_DR || nextJtagState == SHIFT_IR;
             const bool enteringShift = !isShift && nextIsShift;
             const bool leavingShift = isShift && !nextIsShift;
             const bool flush = bitIdx == numBits - 1 || enteringShift || leavingShift;
             if (flush) {
                 const int nextPendingBitIdx = bitIdx + 1;
                 if (isShift) {
-
-                    /*
-                    for (int i = firstPendingBitIdx; i < nextPendingBitIdx; i++) {
-                        if (!splitter->tdiSender(tdi, tdo, i, i + 1,
-                                    i == nextPendingBitIdx - 1 ? tmsBit : false, splitter->tdiSenderExtra)) {
-                            goto bail_reset;
-                        }
-                    }
-                    */
-
-
-
                     if (!splitter->tdiSender(tdi, tdo, firstPendingBitIdx, nextPendingBitIdx,
                                 tmsBit, splitter->tdiSenderExtra)) {
                         goto bail_reset;
@@ -190,7 +178,7 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
 bail_reset:
     WARN("Resetting TAP\n");
     tapReset(splitter->tmsSender, splitter->tmsSenderExtra);
-    splitter->state = TestLogicReset;
+    splitter->state = TEST_LOGIC_RESET;
     return false;
 }
 

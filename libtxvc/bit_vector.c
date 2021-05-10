@@ -33,7 +33,7 @@
 
 #include <stdint.h>
 
-TXVC_DEFAULT_LOG_TAG(bit-vector);
+TXVC_DEFAULT_LOG_TAG(bitVector);
 
 static inline bool get_bit(const uint8_t* p, int idx) {
     return !!(p[idx / 8] & (1 << (idx % 8)));

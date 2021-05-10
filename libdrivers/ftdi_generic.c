@@ -32,15 +32,13 @@
 
 #include <libftdi1/ftdi.h>
 
-#include <unistd.h>
-
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stddef.h>
 
-TXVC_DEFAULT_LOG_TAG(ftdi-generic);
+TXVC_DEFAULT_LOG_TAG(ftdiGeneric);
 
 #define PIN_ROLE_LIST_ITEMS(X)                                                                     \
     X("driver_low", PIN_ROLE_OTHER_DRIVER_LOW, "permanent low level driver")                       \
@@ -102,8 +100,8 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
 
     for (int i = 0; i < numArgs; i++) {
 #define CONVERT_AND_SET_IF_MATCHES(name, configField, converterFunc, validation, descr)            \
-        if (strcmp(name, argNames[i]) == 0) {                                                        \
-            out->configField = converterFunc(argValues[i]);                                          \
+        if (strcmp(name, argNames[i]) == 0) {                                                      \
+            out->configField = converterFunc(argValues[i]);                                        \
             continue;                                                                              \
         }
         PARAM_LIST_ITEMS(CONVERT_AND_SET_IF_MATCHES)
@@ -125,7 +123,8 @@ struct driver {
     struct ft_params params;
     struct ftdi_context ctx;
     struct txvc_jtag_splitter jtagSplitter;
-    int chipBufferSz;
+    int chipBufferBytes;
+    bool highSpeedCapable;
     unsigned lastTdi : 1;
 };
 
@@ -226,7 +225,13 @@ static bool tmsSenderFn(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* 
 
     struct driver* d = extra;
     while (fromBitIdx < toBitIdx) {
-        const int bitsToTransfer = min(toBitIdx - fromBitIdx, 6);
+        /*
+         * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
+         * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
+         * after command is completed.
+         */
+        const int maxTmsBitsPerCommand = 6;
+        const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
         uint8_t pattern = (!!d->lastTdi) << 7;
         copy_bits(tms, fromBitIdx, &pattern, 0, bitsToTransfer, true);
         const uint8_t cmd[] = {
@@ -249,22 +254,37 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
     struct driver* d = extra;
-    /* Last is special because it is always sent separately via TMS command, ignore it for now. */
+
+    /*
+     * To minimize copying as much as possible we divide vectors onto ranges that have their
+     * adjacent boundaries at appropriate octet boundaries (i.e. multiples of 8), so that
+     * a payload for transferring bytes from the middle range can be constructed by direct
+     * referencing tdi and tdo buffers.
+     * Ranges are:
+     * - leading, 0 to 7 bits. Length is chosen in a such way that it always ends at octet
+     *   boundary. It's length is 0 if vectors start at octet boundary.
+     * - inner, 0 or more whole octets. These are all whole vector octets between end of
+     *   a leading range and the last vector bit.
+     * - trailing, 0 to 7 bits. All bits between end of inner range and the last bit.
+     * - last bit, 1 bit. This one is always present and must be separated because it is send
+     *   via TMS command that is needed e.g. when we are exiting shift state.
+     */
+
     const int lastBitIdx = toBitIdx - 1;
-    /* Determine right boundaries of the first and last stream octets */
-    const int firstOctetEnd = fromBitIdx + (8 - fromBitIdx % 8);
-    const int lastOctetEnd = lastBitIdx + (lastBitIdx % 8 ? (8 - lastBitIdx % 8) : 0);
-    const int lastOctetStart = lastOctetEnd - 8;
-    const bool allInOneOctet = firstOctetEnd == lastOctetEnd;
-    const int numLeadingBits = allInOneOctet ? lastBitIdx - fromBitIdx : firstOctetEnd - fromBitIdx;
-    const int numTrailingBits = allInOneOctet ? 0 : lastBitIdx - lastOctetStart;
+    const int numLeadingBits = fromBitIdx % 8 ? 8 - fromBitIdx % 8 : 0;
+    const int innerBeginIdx = fromBitIdx + numLeadingBits;
+    const int innerEndIdx = lastBitIdx - lastBitIdx % 8;
+    const int numTrailingBits = lastBitIdx % 8;
+
+    ALWAYS_ASSERT(innerBeginIdx % 8 == 0);
+    ALWAYS_ASSERT(innerEndIdx % 8 == 0);
 
     /*
      * Find out maximal amount of whole bytes for a one round such that there is always
      * a bit of extra space for leading, trailing and last bit commands.
      * This just simplifies a loop below.
      */
-    const int maxIntermOctetsPerTransfer = d->chipBufferSz / 2
+    const int maxInnerOctetsPerTransfer = d->chipBufferBytes / 2 /* TODO do we need this div ? */
         - 3 /* Command for sending heading bits */
         - 3 /* Command for sending middle bytes w/o payload */
         - 3 /* Command for sending trailing bits except for the last one */
@@ -272,7 +292,11 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
         ;
 
     for (int curIdx = fromBitIdx; curIdx < toBitIdx;) {
-        uint8_t leadingBitsCmd[3], intermBitsCmdHeader[3], trailingBitsCmd[3], lastBitCmd[3]; 
+        /*
+         * Setup and issue transfer. Stuff as much as possible into one to minimize a number of
+         * underlying USB transfers. Possibly there can be different ranges within same transfer.
+         */
+        uint8_t leadingBitsCmd[3], innerBitsCmdHeader[3], trailingBitsCmd[3], lastBitCmd[3]; 
         uint8_t leadingTdoBits, trailingTdoBits, lastTdoBit;
         bool withLeading = false, withTrailing = false, withLast = false;
         struct readonly_granule out[5];
@@ -280,7 +304,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
         int numOutGranules = 0;
         int numInGranules = 0;
 
-        if (curIdx == fromBitIdx) {
+        if (curIdx == fromBitIdx && numLeadingBits > 0) {
             withLeading = true;
             leadingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
                                         | MPSSE_BITMODE | MPSSE_WRITE_NEG;
@@ -297,34 +321,34 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
             curIdx += numLeadingBits;
         }
         if (curIdx < lastBitIdx) {
-            if (curIdx < lastOctetStart) {
+            if (curIdx < innerEndIdx) {
                 ALWAYS_ASSERT(curIdx % 8 == 0);
-                const int intermOctetsToSend =
-                    min((lastOctetStart - curIdx) / 8, maxIntermOctetsPerTransfer);
-                intermBitsCmdHeader[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
+                const int innerOctetsToSend =
+                    min((innerEndIdx - curIdx) / 8, maxInnerOctetsPerTransfer);
+                innerBitsCmdHeader[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
                                                 | MPSSE_WRITE_NEG;
-                intermBitsCmdHeader[1] = ((intermOctetsToSend - 1) >> 0) & 0xff;
-                intermBitsCmdHeader[2] = ((intermOctetsToSend - 1) >> 8) & 0xff;
+                innerBitsCmdHeader[1] = ((innerOctetsToSend - 1) >> 0) & 0xff;
+                innerBitsCmdHeader[2] = ((innerOctetsToSend - 1) >> 8) & 0xff;
                 out[numOutGranules++] = (struct readonly_granule){
-                    .data = intermBitsCmdHeader,
+                    .data = innerBitsCmdHeader,
                     .size = 3,
                 };
                 out[numOutGranules++] = (struct readonly_granule){
                     .data = tdi + curIdx / 8,
-                    .size = intermOctetsToSend,
+                    .size = innerOctetsToSend,
                 };
                 in[numInGranules++] = (struct granule){
                     .data = tdo + curIdx / 8,
-                    .size = intermOctetsToSend,
+                    .size = innerOctetsToSend,
                 };
-                curIdx += intermOctetsToSend * 8;
+                curIdx += innerOctetsToSend * 8;
             }
-            if (curIdx == lastOctetStart) {
+            if (curIdx == innerEndIdx) {
                 withTrailing = true;
                 trailingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
                                             | MPSSE_BITMODE | MPSSE_WRITE_NEG;
                 trailingBitsCmd[1] = numTrailingBits - 1;
-                trailingBitsCmd[2] = tdi[lastOctetStart / 8];
+                trailingBitsCmd[2] = tdi[innerEndIdx / 8];
                 out[numOutGranules++] = (struct readonly_granule){
                     .data = trailingBitsCmd,
                     .size = 3,
@@ -371,7 +395,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
         }
         if (withTrailing) {
             copy_bits(&trailingTdoBits, 8 - numTrailingBits,
-                    tdo, lastOctetStart, numTrailingBits, false);
+                    tdo, innerEndIdx, numTrailingBits, false);
         }
         if (withLast) {
             const int lastTdi = !!get_bit(tdi, lastBitIdx);
@@ -382,76 +406,6 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
     }
     return true;
 }
-
-TXVC_USED
-static bool loopback_test(struct driver* d) {
-    INFO("%s: start\n", __func__);
-    const uint8_t loopback_start = LOOPBACK_START;
-    if (!do_transfer(&d->ctx, &loopback_start, 1, NULL, 0)) return false;
-
-    bool res = true;
-    const int maxVectorBits = 64;
-
-    for (int round = 0; round < 100; round++) {
-        uint8_t tdi[10];
-        uint8_t tdo[10];
-        txvc_bit_vector_random(tdi, sizeof(tdi));
-
-        for (int start = 0; start < maxVectorBits; start++) {
-            for (int end = start + 1; end < maxVectorBits; end++) {
-                memcpy(tdo, tdi, sizeof(tdo));
-                if (!tdiSenderFn(tdi, tdo, start, end, true, d)) {
-                    ERROR("%s: failed to transfer\n", __func__);
-                    return false;
-                }
-                if (memcmp(tdi, tdo, sizeof(tdo)) != 0) {
-                    res = false;
-                    char tdiStr[4096];
-                    txvc_bit_vector_format_lsb(tdiStr, sizeof(tdiStr), tdi, start, end);
-                    char tdoStr[4096];
-                    txvc_bit_vector_format_lsb(tdoStr, sizeof(tdoStr), tdo, start, end);
-                    WARN("%s: mismatch: (start: %d, end: %d)\n", __func__, start, end);
-                    WARN("TDI: %s\n", tdiStr);
-                    WARN("TDO: %s\n", tdoStr);
-                }
-            }
-        }
-    }
-
-    if (0) {
-        uint8_t tdi[1024];
-        uint8_t tdo[1024];
-        txvc_bit_vector_random(tdi, sizeof(tdi));
-
-        for (int end = 1; end < 1024 * 8; end++) {
-            memcpy(tdo, tdi, sizeof(tdo));
-            INFO("Sending %d bits\n", end);
-            if (!tdiSenderFn(tdi, tdo, 0, end, true, d)) {
-                ERROR("%s: failed to transfer\n", __func__);
-                return false;
-            }
-            if (memcmp(tdi, tdo, sizeof(tdo)) != 0) {
-                res = false;
-                char tdiStr[4096];
-                txvc_bit_vector_format_lsb(tdiStr, sizeof(tdiStr), tdi, 0, end);
-                char tdoStr[4096];
-                txvc_bit_vector_format_lsb(tdoStr, sizeof(tdoStr), tdo, 0, end);
-                WARN("%s: mismatch: (start: %d, end: %d)\n", __func__, 0, end);
-                WARN("TDI: %s\n", tdiStr);
-                WARN("TDO: %s\n", tdoStr);
-            }
-        }
-    }
-
-
-
-
-    const uint8_t loopback_end = LOOPBACK_END;
-    if (!do_transfer(&d->ctx, &loopback_end, 1, NULL, 0)) return false;
-    INFO("%s: done\n", __func__);
-    return res;
-}
-
 
 static bool activate(int numArgs, const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
@@ -486,10 +440,12 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
 
     switch (d->ctx.type) {
         case TYPE_2232H:
-            d->chipBufferSz = 4096;
+            d->chipBufferBytes = 4096;
+            d->highSpeedCapable = true;
             break;
         case TYPE_232H:
-            d->chipBufferSz = 1024;
+            d->chipBufferBytes = 1024;
+            d->highSpeedCapable = true;
             break;
         default:
             ERROR("Unknown chip type: %d\n", d->ctx.type);
@@ -504,23 +460,31 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
         0x05, /* Initialize to 1 MHz clock */
         0x00,
     };
+    /* Append user choices for D4-D7 */
+    for (int i = 4; i < 8; i++) {
+        switch (d->params.d_pins[i]) {
+            case PIN_ROLE_OTHER_DRIVER_HIGH:
+                setupCmds[1] |= 1u << i;
+                setupCmds[2] |= 1u << i;
+                break;
+            case PIN_ROLE_OTHER_DRIVER_LOW:
+                setupCmds[2] |= 1u << i;
+                break;
+            case PIN_ROLE_OTHER_IGNORED:
+                /* Nothing to do */
+                break;
+            default:
+                TXVC_UNREACHABLE();
+        }
+    }
     if (!do_transfer(&d->ctx, setupCmds, sizeof(setupCmds), NULL, 0) || !ensure_synced(&d->ctx)) {
         ERROR("Failed to setup device\n");
         goto bail_reset_mode;
     }
     d->lastTdi = 0;
-
-
-    if (0 && !loopback_test(d)) {
-        goto bail_reset_mode;
-    }
-
-
-
     if (!txvc_jtag_splitter_init(&d->jtagSplitter, tmsSenderFn, d, tdiSenderFn, d)) {
         goto bail_reset_mode;
     }
-
     return true;
 
 bail_reset_mode:
@@ -544,7 +508,7 @@ static bool deactivate(void){
 
 static int max_vector_bits(void){
     struct driver *d = &gFtdi;
-    return d->chipBufferSz * 8;
+    return d->chipBufferBytes * 8;
 }
 
 static int set_tck_period(int tckPeriodNs){
@@ -556,8 +520,7 @@ static int set_tck_period(int tckPeriodNs){
      * Strictly speaking these formulae yield frequency, not a period. 
      */
     struct driver *d = &gFtdi;
-    const bool highSpeed = true; /* TODO set accordingly to current chip type */
-    const int maxFreqMHz = highSpeed ? 30 : 6;
+    const int maxFreqMHz = d->highSpeedCapable ? 30 : 6;
     /* Use nearest greater period if there is no exact match */
     int divider = (maxFreqMHz * tckPeriodNs) / 1000 - (!((maxFreqMHz * tckPeriodNs) % 1000));
     if (divider < 0) {
@@ -568,14 +531,16 @@ static int set_tck_period(int tckPeriodNs){
     }
     int actualPeriodNs = (1 + divider) * 1000 / maxFreqMHz;
     if (divider == 0) {
-        WARN("Using minimal available period - %dns\n", actualPeriodNs);
+        WARN("Using minimal available period: %dns\n", actualPeriodNs);
     }
     if (divider == 0xffff) {
-        WARN("Using maximal available period - %dns\n", actualPeriodNs);
+        WARN("Using maximal available period: %dns\n", actualPeriodNs);
     }
     uint8_t cmd[] = { TCK_DIVISOR, divider & 0xff, (divider >> 8) & 0xff, DIS_DIV_5, };
-    if (!do_transfer(&d->ctx, cmd, highSpeed ? 4 : 3, NULL, 0) || !ensure_synced(&d->ctx)) {
+    if (!do_transfer(&d->ctx, cmd, d->highSpeedCapable ? 4 : 3, NULL, 0)
+            || !ensure_synced(&d->ctx)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
+        actualPeriodNs = -1;
     }
     return actualPeriodNs;
 }
@@ -591,6 +556,11 @@ const struct txvc_driver driver_ftdi_generic = {
     .help =
         "Sends vectors to a device that is connected to JTAG pins of a MPSSE-capable FTDI chip,"
         " which is connected to this machine USB\n"
+        "JTAG pins:\n"
+        "  \"d0\" - TCK\n"
+        "  \"d1\" - TDI\n"
+        "  \"d2\" - TDO\n"
+        "  \"d3\" - TMS\n"
         "Parameters:\n"
 #define AS_HELP_STRING(name, configField, converterFunc, validation, descr) \
         "  \"" name "\" - " descr "\n"
