@@ -24,7 +24,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdint.h>
 #define TXVC_JTAG_SPLITTER_IMPL
 
 #include "txvc/jtag_splitter.h"
