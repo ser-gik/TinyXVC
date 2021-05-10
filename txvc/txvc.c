@@ -93,14 +93,7 @@ static void listen_for_user_interrupt(void) {
     struct sigaction sa;
     sa.sa_flags = 0; /* No SA_RESTART here */
     sigemptyset(&sa.sa_mask);
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
-#endif
     sa.sa_handler = sigint_handler;
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
     sigaction(SIGINT, &sa, NULL);
 }
 
