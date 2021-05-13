@@ -70,6 +70,8 @@ DO_AFTER_EACH_CASE() {
 }
 
 TEST_CASE(Dummy) {
-    FAIL_FATAL("Implement me");
+    /*
+     * TODO
+     */
 }
 

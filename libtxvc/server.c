@@ -26,11 +26,13 @@
 
 #include "txvc/server.h"
 
+#include "txvc/driver.h"
 #include "txvc/log.h"
 
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <netinet/in.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
@@ -44,7 +46,37 @@
 
 TXVC_DEFAULT_LOG_TAG(server);
 
-#define MAX_VECTOR_BITS (32 * 1024)
+struct connection {
+    int socket;
+    const struct txvc_driver *driver;
+    volatile sig_atomic_t *shouldTerminate;
+    size_t vectorNumBytes;
+    uint8_t *tmsVector;
+    uint8_t *tdiVector;
+    uint8_t *tdoVector;
+};
+
+static void deallocate_vectors(struct connection *conn) {
+#define DEALLOC_VECTOR(name) if (conn->name) { free(conn->name); }
+    DEALLOC_VECTOR(tmsVector);
+    DEALLOC_VECTOR(tdiVector);
+    DEALLOC_VECTOR(tdoVector);
+#undef DEALLOC_VECTOR
+    conn->vectorNumBytes = 0;
+}
+
+static void allocate_vectors(struct connection *conn, size_t numBytes) {
+    deallocate_vectors(conn);
+#define ALLOC_VECTOR(name) conn->name = malloc(numBytes); if (!conn->name) { goto bail; }
+    ALLOC_VECTOR(tmsVector);
+    ALLOC_VECTOR(tdiVector);
+    ALLOC_VECTOR(tdoVector);
+#undef ALLOC_VECTOR
+    conn->vectorNumBytes = numBytes;
+    return;
+bail:
+    FATAL("Can not allocate %zu bytes\n", numBytes);
+}
 
 static void log_vector(const char* name, const uint8_t* data, size_t numBits) {
     if (!VERBOSE_ENABLED) {
@@ -95,23 +127,24 @@ static int recv_xvc_int(int s) {
     return -1;
 }
 
-static bool cmd_getinfo(int s, const struct txvc_driver *d) {
-    int maxVectorBits = d->max_vector_bits();
-    if (maxVectorBits > MAX_VECTOR_BITS) {
-        maxVectorBits = MAX_VECTOR_BITS;
+static bool cmd_getinfo(struct connection *conn) {
+    int maxVectorBits = conn->driver->max_vector_bits();
+    if (maxVectorBits <= 0) {
+        ERROR("Bad max vector bits: %d\n", maxVectorBits);
+        return false;
     }
     VERBOSE("%s: responding with vector size %d\n", __func__, maxVectorBits);
     char response[64];
     int len = snprintf(response, sizeof(response), "xvcServer_v1.0:%d\n", maxVectorBits);
-    return send_data(s, response, (size_t) len);
+    return send_data(conn->socket, response, (size_t) len);
 }
 
-static bool cmd_settck(int s, const struct txvc_driver *d) {
-    int suggestedTckPeriod = recv_xvc_int(s);
+static bool cmd_settck(struct connection *conn) {
+    int suggestedTckPeriod = recv_xvc_int(conn->socket);
     if (suggestedTckPeriod < 0) {
         return false;
     }
-    int tckPeriod = d->set_tck_period(suggestedTckPeriod);
+    int tckPeriod = conn->driver->set_tck_period(suggestedTckPeriod);
     if (tckPeriod <= 0) {
         ERROR("%s: bad period: %dns\n", __func__, tckPeriod);
         return false;
@@ -123,38 +156,39 @@ static bool cmd_settck(int s, const struct txvc_driver *d) {
         (uint8_t) (tckPeriod >> 16),
         (uint8_t) (tckPeriod >> 24)
     };
-    return send_data(s, response, 4);
+    return send_data(conn->socket, response, 4);
 }
 
-static bool cmd_shift(int s, const struct txvc_driver *d) {
-    int numBits = recv_xvc_int(s);
-    if (numBits < 0 || numBits > MAX_VECTOR_BITS) {
-        ERROR("Bad vector size: %d (max: %d)\n", numBits, MAX_VECTOR_BITS);
+static bool cmd_shift(struct connection *conn) {
+    int numBits = recv_xvc_int(conn->socket);
+    if (numBits <= 0) {
+        ERROR("Bad vector size: %d\n", numBits);
         return false;
     }
     VERBOSE("%s: shifting %d bits\n", __func__, numBits);
     size_t bytesPerVector = (size_t) numBits / 8 + !!((size_t) numBits % 8);
-    uint8_t tms[MAX_VECTOR_BITS / 8 + 1];
-    uint8_t tdi[MAX_VECTOR_BITS / 8 + 1];
-    if (!recv_data(s, tms, bytesPerVector) || !recv_data(s, tdi, bytesPerVector)) {
+    if (bytesPerVector > conn->vectorNumBytes) {
+        allocate_vectors(conn, bytesPerVector);
+    }
+    if (!recv_data(conn->socket, conn->tmsVector, bytesPerVector)
+            || !recv_data(conn->socket, conn->tdiVector, bytesPerVector)) {
         return false;
     }
-    log_vector("TMS", tms, numBits);
-    log_vector("TDI", tdi, numBits);
-    uint8_t tdo[MAX_VECTOR_BITS / 8 + 1];
-    if (!d->shift_bits(numBits, tms, tdi, tdo)) {
+    log_vector("TMS", conn->tmsVector, numBits);
+    log_vector("TDI", conn->tdiVector, numBits);
+    if (!conn->driver->shift_bits(numBits,
+                conn->tmsVector, conn->tdiVector, conn->tdoVector)) {
         return false;
     }
-    log_vector("TDO", tdo, numBits);
-    return send_data(s, tdo, bytesPerVector);
+    log_vector("TDO", conn->tdoVector, numBits);
+    return send_data(conn->socket, conn->tdoVector, bytesPerVector);
 }
 
-static void run_connectin(int s, const struct txvc_driver *d,
-        volatile sig_atomic_t *shouldTerminate) {
+static void run_connectin(struct connection *conn) {
     const struct {
         size_t prefixSz;
         const char *prefix;
-        bool (*handler)(int s, const struct txvc_driver *m);
+        bool (*handler)(struct connection *conn);
     } commands[] = {
 #define CMD(name) { sizeof (#name ":") - 1, #name ":", cmd_ ## name }
         CMD(getinfo),
@@ -163,9 +197,9 @@ static void run_connectin(int s, const struct txvc_driver *d,
 #undef CMD
     };
 
-    while (!*shouldTerminate) {
+    while (!*conn->shouldTerminate) {
         char command[16] = { 0 };
-        ssize_t sockRes = recv(s, command, sizeof(command), MSG_PEEK);
+        ssize_t sockRes = recv(conn->socket, command, sizeof(command), MSG_PEEK);
         if (sockRes == 0) {
             INFO("Connection was closed by peer\n");
             return;
@@ -182,13 +216,13 @@ static void run_connectin(int s, const struct txvc_driver *d,
             if (sockRead < prefixSz) {
                 shouldContinue = true;
             } else if (strncmp(commands[i].prefix, command, prefixSz) == 0) {
-                ssize_t res = recv(s, command, prefixSz, MSG_WAITALL);
+                ssize_t res = recv(conn->socket, command, prefixSz, MSG_WAITALL);
                 size_t read = res > 0 ? (size_t) res : 0;
                 if (read != prefixSz) {
                     ERROR("Can not pop from socket queue\n");
                     return;
                 }
-                if (!commands[i].handler(s, d)) {
+                if (!commands[i].handler(conn)) {
                     return;
                 }
                 shouldContinue = true;
@@ -241,7 +275,17 @@ static void run_with_address(struct in_addr inAddr, in_port_t port,
         if (peerAddr.sin_family == AF_INET) {
             INFO("Accepted connection from %s:%d\n", inet_ntoa(peerAddr.sin_addr),
                     ntohs(peerAddr.sin_port));
-            run_connectin(s, driver, shouldTerminate);
+            struct connection conn = {
+                .socket = s,
+                .driver = driver,
+                .shouldTerminate = shouldTerminate,
+                .vectorNumBytes = 0,
+                .tmsVector = NULL,
+                .tdiVector = NULL,
+                .tdoVector = NULL,
+            };
+            run_connectin(&conn);
+            deallocate_vectors(&conn);
         } else {
             WARN("Ignored connection from family %d\n", peerAddr.sin_family);
         }
