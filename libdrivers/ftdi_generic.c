@@ -94,7 +94,8 @@ struct ft_params {
     X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, "D6 pin role")                        \
     X("d7", d_pins[7], str_to_pin_role, != PIN_ROLE_INVALID, "D7 pin role")                        \
 
-static bool load_config(int numArgs, const char **argNames, const char **argValues, struct ft_params *out) {
+static bool load_config(int numArgs, const char **argNames, const char **argValues,
+                            struct ft_params *out) {
     memset(out, 0, sizeof(*out));
     out->channel = -1;
 
@@ -224,8 +225,15 @@ static bool tmsSenderFn(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* 
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
     struct driver* d = extra;
-    while (fromBitIdx < toBitIdx) {
+
+    /* Send TMS commands in batches to minimize chip timeout impact for long vectors. */
+    uint8_t cmdBuf[4096];
+    const size_t cmdBufMax = d->chipBufferBytes;
+    ALWAYS_ASSERT(sizeof(cmdBuf) >= cmdBufMax);
+    size_t cmdBufHead = 0;
+    for (;;) {
         /*
+         * Append next TMS command to a buffer.
          * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
          * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
          * after command is completed.
@@ -234,17 +242,24 @@ static bool tmsSenderFn(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* 
         const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
         uint8_t pattern = (!!d->lastTdi) << 7;
         copy_bits(tms, fromBitIdx, &pattern, 0, bitsToTransfer, true);
-        const uint8_t cmd[] = {
-            MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE,
-            bitsToTransfer - 1,
-            pattern,
-        };
-        if (!do_transfer(&d->ctx, cmd, sizeof(cmd), NULL, 0) || !ensure_synced(&d->ctx)) {
-            return false;
-        }
+        cmdBuf[cmdBufHead++] = MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE;
+        cmdBuf[cmdBufHead++] = bitsToTransfer - 1;
+        cmdBuf[cmdBufHead++] = pattern;
         fromBitIdx += bitsToTransfer;
+
+        const size_t tmsCmdSz = 3;
+        const bool cmdBufFull = (cmdBufMax - cmdBufHead) < tmsCmdSz;
+        const bool finish = fromBitIdx >= toBitIdx;
+        if (cmdBufFull || finish) {
+            if (!do_transfer(&d->ctx, cmdBuf, cmdBufHead, NULL, 0)) {
+                return false;
+            }
+            if (finish) {
+                return ensure_synced(&d->ctx);
+            }
+            cmdBufHead = 0;
+        }
     }
-    return true;
 }
 
 static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx,
@@ -284,7 +299,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
      * a bit of extra space for leading, trailing and last bit commands.
      * This just simplifies a loop below.
      */
-    const int maxInnerOctetsPerTransfer = d->chipBufferBytes / 2 /* TODO do we need this div ? */
+    const int maxInnerOctetsPerTransfer = d->chipBufferBytes
         - 3 /* Command for sending heading bits */
         - 3 /* Command for sending middle bytes w/o payload */
         - 3 /* Command for sending trailing bits except for the last one */
@@ -296,7 +311,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
          * Setup and issue transfer. Stuff as much as possible into one to minimize a number of
          * underlying USB transfers. Possibly there can be different ranges within same transfer.
          */
-        uint8_t leadingBitsCmd[3], innerBitsCmdHeader[3], trailingBitsCmd[3], lastBitCmd[3]; 
+        uint8_t leadingBitsCmd[3], innerBitsCmdHeader[3], trailingBitsCmd[3], lastBitCmd[3];
         uint8_t leadingTdoBits, trailingTdoBits, lastTdoBit;
         bool withLeading = false, withTrailing = false, withLast = false;
         struct readonly_granule out[5];
@@ -315,7 +330,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                 .size = 3,
             };
             in[numInGranules++] = (struct granule){
-                .data = &leadingTdoBits, 
+                .data = &leadingTdoBits,
                 .size = 1,
             };
             curIdx += numLeadingBits;
@@ -404,7 +419,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
             set_bit(tdo, lastBitIdx, lastTdo);
         }
     }
-    return true;
+    return ensure_synced(&d->ctx);
 }
 
 static bool activate(int numArgs, const char **argNames, const char **argValues){
@@ -444,7 +459,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             d->highSpeedCapable = true;
             break;
         case TYPE_232H:
-            d->chipBufferBytes = 1024;
+            d->chipBufferBytes = 1024 / 2; /* TODO why this doesn't work with documented size? */
             d->highSpeedCapable = true;
             break;
         default:
@@ -517,7 +532,7 @@ static int set_tck_period(int tckPeriodNs){
      * TCK/SK period = 12MHz / (( 1 +[(0xValueH * 256) OR 0xValueL] ) * 2)
      * or, if high speed available:
      * TCK period = 60MHz / (( 1 +[ (0xValueH * 256) OR 0xValueL] ) * 2)
-     * Strictly speaking these formulae yield frequency, not a period. 
+     * Strictly speaking these formulae yield frequency, not a period.
      */
     struct driver *d = &gFtdi;
     const int maxFreqMHz = d->highSpeedCapable ? 30 : 6;
