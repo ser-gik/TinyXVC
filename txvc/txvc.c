@@ -56,7 +56,7 @@ TXVC_DEFAULT_LOG_TAG(txvc);
     OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
                          " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
             "ipv4_address:port", const char *, optarg)                                             \
-    OPT("t", initialTckPeriodNanos, "Initial TCK period, expressed in nanoseconds."                \
+    OPT("t", tckPeriodNanos, "Forced TCK period, expressed in nanoseconds."                        \
                          " Can be used to enforce device to operate at specific rate if "          \
                          " connected client doesn't set preferred value via \"settck\" command",   \
             "initial_tck_period_ns", int, parse_int_option(optarg))                                \
@@ -185,6 +185,11 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
     return strcmp(name, d->name) != 0;
 }
 
+static int noop_set_tck_period(int tckPeriodNs) {
+    WARN("Ignoring new TCK period %dns\n", tckPeriodNs);
+    return tckPeriodNs;
+}
+
 int main(int argc, char**argv) {
     listen_for_user_interrupt();
 
@@ -214,8 +219,8 @@ int main(int argc, char**argv) {
     if (!opts.serverAddr) {
         opts.serverAddr = DEFAULT_SERVER_ADDR;
     }
-    if (opts.initialTckPeriodNanos < 0) {
-        fprintf(stderr, "Bad initial TCK period\n");
+    if (opts.tckPeriodNanos < 0) {
+        fprintf(stderr, "Bad TCK period\n");
         return EXIT_FAILURE;
     }
 
@@ -223,23 +228,31 @@ int main(int argc, char**argv) {
     if (!txvc_backend_profile_parse(opts.profile, &profile)) {
         return EXIT_FAILURE;
     }
-    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, profile.driverName);
-    if (!driver) {
-        ERROR("Can not find driver \"%s\"\n", profile.driverName);
-        return EXIT_FAILURE;
+
+    struct txvc_driver driverWrapper;
+    {
+        const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, profile.driverName);
+        if (!driver) {
+            ERROR("Can not find driver \"%s\"\n", profile.driverName);
+            return EXIT_FAILURE;
+        }
+        driverWrapper = *driver;
     }
-    if (!driver->activate(profile.numArg, profile.argKeys, profile.argValues)) {
+
+    if (!driverWrapper.activate(profile.numArg, profile.argKeys, profile.argValues)) {
         ERROR("Failed to activate driver \"%s\"\n", profile.driverName);
         return EXIT_FAILURE;
     }
 
-    if (opts.initialTckPeriodNanos > 0
-            && driver->set_tck_period(opts.initialTckPeriodNanos) != opts.initialTckPeriodNanos) {
-        WARN("Can't set TCK period to %dns\n", opts.initialTckPeriodNanos);
+    if (opts.tckPeriodNanos > 0) {
+        if (driverWrapper.set_tck_period(opts.tckPeriodNanos) != opts.tckPeriodNanos) {
+            WARN("Can't set TCK period to %dns\n", opts.tckPeriodNanos);
+        }
+        driverWrapper.set_tck_period = noop_set_tck_period;
     }
 
-    txvc_run_server(opts.serverAddr, driver, &shouldTerminate);
-    driver->deactivate();
+    txvc_run_server(opts.serverAddr, &driverWrapper, &shouldTerminate);
+    driverWrapper.deactivate();
     return EXIT_SUCCESS;
 }
 

@@ -38,17 +38,10 @@ static const struct {
         .name = "mimas_a7",
         {
             .description = "Numato Lab Mimas Artix 7 FPGA Module",
-            .profile = "ft2232h:"
+            .profile = "ftdi-generic:"
                 "vid=2a19,"
                 "pid=1009,"
                 "channel=B,"
-                "tck_idle=high,"
-                "tdi_change_at=falling,"
-                "tdo_sample_at=rising,"
-                "d0=tck,"
-                "d1=tdi,"
-                "d2=tdo,"
-                "d3=tms,"
                 "d4=ignored,"
                 "d5=ignored,"
                 "d6=driver_low,"

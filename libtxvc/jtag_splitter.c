@@ -137,31 +137,55 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
             if (flush) {
                 const int nextPendingBitIdx = bitIdx + 1;
                 if (isShift) {
-                    if (!splitter->tdiSender(tdi, tdo, firstPendingBitIdx, nextPendingBitIdx,
-                                tmsBit, splitter->tdiSenderExtra)) {
-                        goto bail_reset;
-                    }
                     if (VERBOSE_ENABLED) {
                         char buf[1024];
                         const char* logPrefix = tmsBit ? "shift" : "partial shift";
                         const int numBitsShifted = nextPendingBitIdx - firstPendingBitIdx;
                         if (numBitsShifted > (int) sizeof(buf) - 1) {
                             VERBOSE("%s in:  (%d bits)\n", logPrefix, numBitsShifted);
-                            VERBOSE("%s out: (%d bits)\n", logPrefix, numBitsShifted);
                         } else {
                             txvc_bit_vector_format_msb(buf, sizeof(buf), tdi,
                                     firstPendingBitIdx, nextPendingBitIdx);
                             VERBOSE("%s in:  %s\n", logPrefix, buf);
+                        }
+                    }
+
+                    if (!splitter->tdiSender(tdi, tdo, firstPendingBitIdx, nextPendingBitIdx,
+                                tmsBit, splitter->tdiSenderExtra)) {
+                        goto bail_reset;
+                    }
+
+                    if (VERBOSE_ENABLED) {
+                        char buf[1024];
+                        const char* logPrefix = tmsBit ? "shift" : "partial shift";
+                        const int numBitsShifted = nextPendingBitIdx - firstPendingBitIdx;
+                        if (numBitsShifted > (int) sizeof(buf) - 1) {
+                            VERBOSE("%s out: (%d bits)\n", logPrefix, numBitsShifted);
+                        } else {
                             txvc_bit_vector_format_msb(buf, sizeof(buf), tdo,
                                     firstPendingBitIdx, nextPendingBitIdx);
                             VERBOSE("%s out: %s\n", logPrefix, buf);
                         }
                     }
                 } else {
+                    if (VERBOSE_ENABLED) {
+                        char buf[1024];
+                        const int numBitsShifted = nextPendingBitIdx - firstPendingBitIdx;
+                        if (numBitsShifted > (int) sizeof(buf) - 1) {
+                            VERBOSE("shift tms: (%d bits)\n", numBitsShifted);
+                        } else {
+                            txvc_bit_vector_format_msb(buf, sizeof(buf), tms,
+                                    firstPendingBitIdx, nextPendingBitIdx);
+                            VERBOSE("shift tms: %s\n", buf);
+                        }
+                    }
+
                     if (!splitter->tmsSender(tms, firstPendingBitIdx, nextPendingBitIdx,
                                 splitter->tmsSenderExtra)) {
                         goto bail_reset;
                     }
+
+                    VERBOSE("shift tms: done\n");
                 }
                 firstPendingBitIdx = nextPendingBitIdx;
             }
