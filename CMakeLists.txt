@@ -57,4 +57,5 @@ add_subdirectory(libdrivers)
 add_subdirectory(txvc)
 add_subdirectory(libtinytest)
 add_subdirectory(tests)
+add_subdirectory(player)
 
