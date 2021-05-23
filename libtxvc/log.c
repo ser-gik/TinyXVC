@@ -27,6 +27,10 @@
 #include "txvc/log.h"
 #include "txvc/defs.h"
 
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,11 +38,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-#define TEXT_COLOR_RED "\x1b[31m"
-#define TEXT_COLOR_GREEN "\x1b[32m"
-#define TEXT_COLOR_YELLOW "\x1b[33m"
-#define TEXT_COLOR_RESET "\x1b[0m"
 
 static enum txvc_log_level gMinLevel = LOG_LEVEL_ERROR;
 static const char gLevelNames[] = {
@@ -48,6 +47,14 @@ static const char gLevelNames[] = {
     [LOG_LEVEL_ERROR] = 'E',
     [LOG_LEVEL_FATAL] = 'F',
 };
+static const char *gLevelColorEscapes[] = {
+    [LOG_LEVEL_VERBOSE] = "",
+    [LOG_LEVEL_INFO] = "",
+    [LOG_LEVEL_WARN] = "",
+    [LOG_LEVEL_ERROR] = "",
+    [LOG_LEVEL_FATAL] = "",
+};
+static const char *gDefaultColorEscape = "";
 static long long gOriginUs;
 static char *gTagSpec;
 static unsigned gCurConfigId = 0u;
@@ -61,6 +68,16 @@ static long long getTimeUs(void) {
 __attribute__((constructor))
 static void initLogger(void) {
     gOriginUs = getTimeUs();
+    struct stat st;
+    if (fstat(STDOUT_FILENO, &st) == 0 && S_ISCHR(st.st_mode)) {
+        /* stdout is likely a terminal, use escape codes to colorize output */
+        gLevelColorEscapes[LOG_LEVEL_VERBOSE] = "\x1b[0m"; /* Default */
+        gLevelColorEscapes[LOG_LEVEL_INFO] = "\x1b[32m"; /* Green */
+        gLevelColorEscapes[LOG_LEVEL_WARN] = "\x1b[33m"; /* Yellow */
+        gLevelColorEscapes[LOG_LEVEL_ERROR] = "\x1b[31m"; /* Red */
+        gLevelColorEscapes[LOG_LEVEL_FATAL] = "\x1b[31m"; /* Red */
+        gDefaultColorEscape = "\x1b[0m";
+    }
 }
 
 static bool tag_enabled(struct txvc_log_tag *tag) {
@@ -144,17 +161,7 @@ void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const char *f
     vsnprintf(head, avail, fmt, ap);
     va_end(ap);
 
-    const char* escColor;
-    switch (level) {
-        case LOG_LEVEL_VERBOSE: escColor = TEXT_COLOR_RESET; break;
-        case LOG_LEVEL_INFO: escColor = TEXT_COLOR_GREEN; break;
-        case LOG_LEVEL_WARN: escColor = TEXT_COLOR_YELLOW; break;
-        case LOG_LEVEL_ERROR:
-        case LOG_LEVEL_FATAL: escColor = TEXT_COLOR_RED; break;
-        default: escColor = TEXT_COLOR_RESET; break;
-    }
-
-    printf("%s%s%s", escColor, buf, TEXT_COLOR_RESET);
+    printf("%s%s%s", gLevelColorEscapes[level], buf, gDefaultColorEscape);
     fflush(stdout);
     if (level == LOG_LEVEL_FATAL) {
         abort();
