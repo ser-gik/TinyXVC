@@ -24,6 +24,14 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * This is an ad-hoc JTAG decoder for raw logical analyzer samples that are read from file.
+ * It depends on jtag splitter internal logging.
+ * TODO:
+ * - rework it to not depend on splitter logs
+ * - provide CLI to setup at least JTAG signal bit positions in input samples
+ */
+
 #include "txvc/log.h"
 #include "txvc/defs.h"
 #include "txvc/jtag_splitter.h"
