@@ -168,6 +168,7 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
                         }
                     }
                 } else {
+#if 0
                     if (VERBOSE_ENABLED) {
                         char buf[1024];
                         const int numBitsShifted = nextPendingBitIdx - firstPendingBitIdx;
@@ -179,13 +180,16 @@ bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
                             VERBOSE("shift tms: %s\n", buf);
                         }
                     }
+#endif
 
                     if (!splitter->tmsSender(tms, firstPendingBitIdx, nextPendingBitIdx,
                                 splitter->tmsSenderExtra)) {
                         goto bail_reset;
                     }
 
+#if 0
                     VERBOSE("shift tms: done\n");
+#endif
                 }
                 firstPendingBitIdx = nextPendingBitIdx;
             }

@@ -276,8 +276,9 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
      * a payload for transferring bytes from the middle range can be constructed by direct
      * referencing tdi and tdo buffers.
      * Ranges are:
-     * - leading, 0 to 7 bits. Length is chosen in a such way that it always ends at octet
-     *   boundary. It's length is 0 if vectors start at octet boundary.
+     * - leading, 0 to 7 bits. Length is chosen in a such way that it ends at octet
+     *   boundary except for when last bit (see below) falls into leading range.
+     *   It's length is 0 if vectors start at octet boundary.
      * - inner, 0 or more whole octets. These are all whole vector octets between end of
      *   a leading range and the last vector bit.
      * - trailing, 0 to 7 bits. All bits between end of inner range and the last bit.
@@ -286,13 +287,13 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
      */
 
     const int lastBitIdx = toBitIdx - 1;
-    const int numLeadingBits = fromBitIdx % 8 ? 8 - fromBitIdx % 8 : 0;
-    const int innerBeginIdx = fromBitIdx + numLeadingBits;
-    const int innerEndIdx = lastBitIdx - lastBitIdx % 8;
-    const int numTrailingBits = lastBitIdx % 8;
-
-    ALWAYS_ASSERT(innerBeginIdx % 8 == 0);
-    ALWAYS_ASSERT(innerEndIdx % 8 == 0);
+    const int numRegularBits = lastBitIdx - fromBitIdx;
+    const int numFirstOctetBits = 8 - fromBitIdx % 8;
+    const int numLeadingBits = min(numFirstOctetBits == 8 ? 0 : numFirstOctetBits, numRegularBits);
+    const bool leadingOnly = numLeadingBits == numRegularBits;
+    const int innerBeginIdx = leadingOnly ? -1 : fromBitIdx + numLeadingBits;
+    const int innerEndIdx = leadingOnly ? -1 : lastBitIdx - lastBitIdx % 8;
+    const int numTrailingBits = leadingOnly ? 0 : lastBitIdx % 8;
 
     /*
      * Find out maximal amount of whole bytes for a one round such that there is always
@@ -337,6 +338,8 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
         }
         if (curIdx < lastBitIdx) {
             if (curIdx < innerEndIdx) {
+                ALWAYS_ASSERT(innerBeginIdx % 8 == 0);
+                ALWAYS_ASSERT(innerEndIdx % 8 == 0);
                 ALWAYS_ASSERT(curIdx % 8 == 0);
                 const int innerOctetsToSend =
                     min((innerEndIdx - curIdx) / 8, maxInnerOctetsPerTransfer);
@@ -358,7 +361,7 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                 };
                 curIdx += innerOctetsToSend * 8;
             }
-            if (curIdx == innerEndIdx) {
+            if (curIdx == innerEndIdx && numTrailingBits > 0) {
                 withTrailing = true;
                 trailingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
                                             | MPSSE_BITMODE | MPSSE_WRITE_NEG;
