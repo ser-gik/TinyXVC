@@ -77,3 +77,35 @@ extern bool txvc_jtag_splitter_deinit(struct txvc_jtag_splitter* splitter);
 extern bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
         int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo);
 
+
+
+
+
+enum txvc_jtag_splitter2_event {
+    JTAG_SPLITTER_NONE,
+    JTAG_SPLITTER_SHIFT_TMS,
+    JTAG_SPLITTER_SHIFT_TDI,
+    JTAG_SPLITTER_SHIFT_TDI_INCOMPLETE,
+    JTAG_SPLITTER_FLUSH_ALL,
+};
+
+typedef bool (*txvc_jtag_splitter2_callback) (
+        enum txvc_jtag_splitter2_event event,
+        const uint8_t *srcVec,
+        int fromBitIdx,
+        int toBitIdx,
+        uint8_t *dstVec,
+        void *extra);
+
+struct txvc_jtag_splitter2 {
+    int _state;
+    txvc_jtag_splitter2_callback _cb;
+    void *_cbExtra;
+};
+
+extern bool txvc_jtag_splitter2_init(struct txvc_jtag_splitter2 *splitter,
+        txvc_jtag_splitter2_callback cb, void *cbExtra);
+extern bool txvc_jtag_splitter2_deinit(struct txvc_jtag_splitter2 *splitter);
+extern bool txvc_jtag_splitter2_process(struct txvc_jtag_splitter2 *splitter,
+        int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo);
+

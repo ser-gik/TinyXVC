@@ -24,6 +24,7 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <stdint.h>
 #define TXVC_JTAG_SPLITTER_IMPL
 
 #include "txvc/jtag_splitter.h"
@@ -31,6 +32,8 @@
 #include "txvc/log.h"
 #include "txvc/defs.h"
 #include "txvc/bit_vector.h"
+
+#include <stddef.h>
 
 TXVC_DEFAULT_LOG_TAG(jtagSplit);
 
@@ -209,3 +212,113 @@ bail_reset:
     return false;
 }
 
+
+
+
+
+
+
+
+
+
+static bool tapReset2(txvc_jtag_splitter2_callback cb, void *cbExtra) {
+    const uint8_t tmsTapResetVector = 0x1f;
+    return cb(JTAG_SPLITTER_SHIFT_TMS, &tmsTapResetVector, 0, 5, NULL, cbExtra)
+        && cb(JTAG_SPLITTER_FLUSH_ALL, NULL, 0, 0, NULL, cbExtra);
+}
+
+static void logSubVector(const char *what, const uint8_t *vector, int fromBitIdx, int toBitIdx) {
+    if (!VERBOSE_ENABLED) {
+        return;
+    }
+    char buf[1024];
+    const int numBitsShifted = toBitIdx - fromBitIdx;
+    if (numBitsShifted > (int) sizeof(buf) - 1) {
+        VERBOSE("%s:  (%d bits)\n", what, numBitsShifted);
+    } else {
+        txvc_bit_vector_format_msb(buf, sizeof(buf), vector, fromBitIdx, toBitIdx);
+        VERBOSE("%s:  %s\n", what, buf);
+    }
+}
+
+bool txvc_jtag_splitter2_init(struct txvc_jtag_splitter2 *splitter,
+        txvc_jtag_splitter2_callback cb, void *cbExtra) {
+    if (!tapReset2(cb, cbExtra)) {
+        ERROR("Can not reset TAP\n");
+        return false;
+    }
+    splitter->_state = TEST_LOGIC_RESET;
+    splitter->_cb = cb;
+    splitter->_cbExtra = cbExtra;
+    return true;
+}
+
+bool txvc_jtag_splitter2_deinit(struct txvc_jtag_splitter2 *splitter) {
+    if (!tapReset2(splitter->_cb, splitter->_cbExtra)) {
+        ERROR("Can not reset TAP\n");
+        return false;
+    }
+    splitter->_state = TEST_LOGIC_RESET;
+    splitter->_cb = NULL;
+    splitter->_cbExtra = NULL;
+    return true;
+}
+
+bool txvc_jtag_splitter2_process(struct txvc_jtag_splitter2 *splitter,
+        int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo) {
+    int firstPendingBitIdx = 0;
+    enum jtag_state jtagState = splitter->_state;
+    for (int bitIdx = 0; bitIdx < numBits;) {
+        uint8_t tmsByte = tms[bitIdx / 8];
+        const int thisRoundEndBitIdx = bitIdx + 8 > numBits ? numBits :bitIdx + 8;
+        for (; bitIdx < thisRoundEndBitIdx; tmsByte >>= 1, bitIdx++) {
+            const bool tmsBit = tmsByte & 1;
+            const enum jtag_state nextJtagState = next_state(jtagState, tmsBit);
+            const bool isShift = jtagState == SHIFT_DR || jtagState == SHIFT_IR;
+            const bool nextIsShift = nextJtagState == SHIFT_DR || nextJtagState == SHIFT_IR;
+            const bool enteringShift = !isShift && nextIsShift;
+            if (enteringShift) ALWAYS_ASSERT(!tmsBit);
+            const bool leavingShift = isShift && !nextIsShift;
+            if (leavingShift) ALWAYS_ASSERT(tmsBit);
+            const bool endOfVector = bitIdx == numBits - 1;
+            const bool event = endOfVector || enteringShift || leavingShift;
+            if (event) {
+                const int nextPendingBitIdx = bitIdx + 1;
+                if (isShift) {
+                    logSubVector(leavingShift ? "shift in" : "incomplete shift in",
+                            tdi, firstPendingBitIdx, nextPendingBitIdx);
+                    if (!splitter->_cb(leavingShift ? JTAG_SPLITTER_SHIFT_TDI
+                                                    : JTAG_SPLITTER_SHIFT_TDI_INCOMPLETE,
+                                tdi, firstPendingBitIdx, nextPendingBitIdx,
+                                tdo, splitter->_cbExtra)) {
+                        goto bail_reset;
+                    }
+                    logSubVector(leavingShift ? "shift out" : "incomplete shift out",
+                            tdo, firstPendingBitIdx, nextPendingBitIdx);
+                } else {
+                    if (!splitter->_cb(JTAG_SPLITTER_SHIFT_TMS,
+                                tms, firstPendingBitIdx, nextPendingBitIdx,
+                                NULL, splitter->_cbExtra)) {
+                        goto bail_reset;
+                    }
+                }
+                firstPendingBitIdx = nextPendingBitIdx;
+            }
+            if (jtagState != nextJtagState) {
+                VERBOSE("%s\n", jtag_state_name(nextJtagState));
+            }
+            jtagState = nextJtagState;
+        }
+    }
+    if (!splitter->_cb(JTAG_SPLITTER_FLUSH_ALL, NULL, 0, 0, NULL, splitter->_cbExtra)) {
+        goto bail_reset;
+    }
+    splitter->_state = jtagState;
+    return true;
+
+bail_reset:
+    WARN("Resetting TAP\n");
+    tapReset2(splitter->_cb, splitter->_cbExtra);
+    splitter->_state = TEST_LOGIC_RESET;
+    return false;
+}
