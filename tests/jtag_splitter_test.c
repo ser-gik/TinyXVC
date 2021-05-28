@@ -40,29 +40,15 @@ static struct mock {
 } gMock;
 
 
-static bool mock_tms_sender(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* extra) {
-    (void) tms;
-    (void) fromBitIdx;
-    (void) toBitIdx;
-    (void) extra;
-
-    return true;
-}
-
-static bool mock_tdi_sender(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx,
-                            bool lastTmsBitHigh, void* extra) {
-    (void) tdi;
-    (void) tdo;
-    (void) fromBitIdx;
-    (void) toBitIdx;
-    (void) lastTmsBitHigh;
+static bool mock_splitter_callback(const struct txvc_jtag_split_event *event, void* extra) {
+    (void) event;
     (void) extra;
 
     return true;
 }
 
 DO_BEFORE_EACH_CASE() {
-    ASSERT_TRUE(txvc_jtag_splitter_init(&gUut, mock_tms_sender, &gMock, mock_tdi_sender, &gMock));
+    ASSERT_TRUE(txvc_jtag_splitter_init(&gUut, mock_splitter_callback, &gMock));
 }
 
 DO_AFTER_EACH_CASE() {

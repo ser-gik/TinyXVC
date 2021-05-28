@@ -49,25 +49,11 @@ static inline void set_bit(uint8_t* p, int idx, bool bit) {
     else *octet &= ~(1 << (idx % 8));
 }
 
-static bool noop_tms_sender(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* extra) {
-    TXVC_UNUSED(tms);
-    TXVC_UNUSED(fromBitIdx);
-    TXVC_UNUSED(toBitIdx);
+static bool noop_splitter_callback(const struct txvc_jtag_split_event *event, void* extra) {
+    TXVC_UNUSED(event);
     TXVC_UNUSED(extra);
     return true;
 }
-
-static bool noop_tdi_sender(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx,
-        bool lastTmsBitHigh, void* extra) {
-    TXVC_UNUSED(tdi);
-    TXVC_UNUSED(tdo);
-    TXVC_UNUSED(fromBitIdx);
-    TXVC_UNUSED(toBitIdx);
-    TXVC_UNUSED(lastTmsBitHigh);
-    TXVC_UNUSED(extra);
-    return true;
-}
-
 
 int main(int argc, const char **argv) {
     TXVC_UNUSED(argc);
@@ -88,7 +74,7 @@ int main(int argc, const char **argv) {
     }
 
     struct txvc_jtag_splitter splitter;
-    txvc_jtag_splitter_init(&splitter, noop_tms_sender, NULL, noop_tdi_sender, NULL);
+    txvc_jtag_splitter_init(&splitter, noop_splitter_callback, NULL);
 
     uint8_t tms[1024];
     uint8_t tdi[sizeof(tms)];

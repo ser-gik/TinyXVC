@@ -255,7 +255,7 @@ static bool tmsSenderFn(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* 
                 return false;
             }
             if (finish) {
-                return ensure_synced(&d->ctx);
+                return true;
             }
             cmdBufHead = 0;
         }
@@ -378,14 +378,11 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                 curIdx += numTrailingBits;
             }
         }
-        if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
-            return false;
-        }
 
         if (curIdx == lastBitIdx) {
             withLast = true;
-            numOutGranules = 0;
-            numInGranules = 0;
+           // numOutGranules = 0;
+           // numInGranules = 0;
             const int lastTdiBit = !!get_bit(tdi, lastBitIdx);
             const int lastTmsBit = !!lastTmsBitHigh;
             lastBitCmd[0] = MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE;
@@ -401,10 +398,14 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
             };
             curIdx += 1;
 
-            /* TODO having TMS command in the same batch somehow blocks writes */
-            if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
-                return false;
-            }
+           // /* TODO having TMS command in the same batch somehow blocks writes */
+           // if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
+           //     return false;
+           // }
+        }
+
+        if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
+            return false;
         }
 
         if (withLeading) {
@@ -422,7 +423,30 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
             set_bit(tdo, lastBitIdx, lastTdo);
         }
     }
-    return ensure_synced(&d->ctx);
+    return true;
+}
+
+static bool jtagSplitterCallback(const struct txvc_jtag_split_event *event, void *extra) {
+    {
+        const struct txvc_jtag_split_shift_tms *e = txvc_jtag_split_cast_to_shift_tms(event);
+        if (e) {
+            return tmsSenderFn(e->tms, e->fromBitIdx, e->toBitIdx, extra);
+        }
+    }
+    {
+        const struct txvc_jtag_split_shift_tdi *e = txvc_jtag_split_cast_to_shift_tdi(event);
+        if (e) {
+            return tdiSenderFn(e->tdi, e->tdo, e->fromBitIdx, e->toBitIdx, !e->incomplete, extra);
+        }
+    }
+    {
+        const struct txvc_jtag_split_flush_all *e = txvc_jtag_split_cast_to_flush_all(event);
+        if (e) {
+            WARN("Flush event ignored\n");
+            return true;
+        }
+    }
+    TXVC_UNREACHABLE();
 }
 
 static bool activate(int numArgs, const char **argNames, const char **argValues){
@@ -500,7 +524,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
         goto bail_reset_mode;
     }
     d->lastTdi = 0;
-    if (!txvc_jtag_splitter_init(&d->jtagSplitter, tmsSenderFn, d, tdiSenderFn, d)) {
+    if (!txvc_jtag_splitter_init(&d->jtagSplitter, jtagSplitterCallback, d)) {
         goto bail_reset_mode;
     }
     return true;

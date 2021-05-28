@@ -26,86 +26,106 @@
 
 #pragma once
 
+#include "txvc/defs.h"
+
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /**
- * User-provided function that sents TMS vector to a TAP. TDI must not change during this
- * transfer. Byte 0 is sent first, each byte is sent from LSB to MSB.
+ * Splitter for combined XVC JTAG vectors.
+ *
+ * Useful for drivers that can not shift TMS and TDI simultaneously. Splitter decodes
+ * combined JTAG stream and separately notifies user about TMS and TDI shifts.
  */
-typedef bool (*txvc_jtag_splitter_tms_sender_fn)(
-        const uint8_t* tms,
-        int fromBitIdx,
-        int toBitIdx,
-        void* extra);
+
+/** JTAG stream decoding event, see definition below */
+struct txvc_jtag_split_event;
+/** Callback that receives decoding events. Returns `true` if event was processed successfully */
+typedef bool (*txvc_jtag_splitter_callback)(const struct txvc_jtag_split_event *event, void *extra);
 
 /**
- * User-provided function that shifts TDI vector to a TAP and simultaneously fills TDO vector
- * with data received from TAP. TMS must always be low during this transfer, except for
- * the last bit to be sent, where actual TMS level is denoted by associated argument.
- * Byte 0 is sent first, each byte is sent from LSB to MSB.
+ * JTAG splitter.
+ * User MUST NOT directly access any of fields in this struct, instead use APIs below.
  */
-typedef bool (*txvc_jtag_splitter_tdi_sender_fn)(
-        const uint8_t* tdi,
-        uint8_t* tdo,
-        int fromBitIdx,
-        int toBitIdx,
-        bool lastTmsBitHigh,
-        void* extra);
-
 struct txvc_jtag_splitter {
-#ifdef TXVC_JTAG_SPLITTER_IMPL
-#define PRIVATE(type, name) type name
-#else
-#define PRIVATE(type, name) type do_not_ever_use_me_directly_ ## name
-#endif
-
-    PRIVATE(int, state);
-    PRIVATE(txvc_jtag_splitter_tms_sender_fn, tmsSender);
-    PRIVATE(void*, tmsSenderExtra);
-    PRIVATE(txvc_jtag_splitter_tdi_sender_fn, tdiSender);
-    PRIVATE(void*, tdiSenderExtra);
-
-#undef PRIVATE
-};
-
-extern bool txvc_jtag_splitter_init(struct txvc_jtag_splitter* splitter,
-        txvc_jtag_splitter_tms_sender_fn tmsSender, void* tmsSenderExtra,
-        txvc_jtag_splitter_tdi_sender_fn tdiSender, void* tdiSenderExtra);
-extern bool txvc_jtag_splitter_deinit(struct txvc_jtag_splitter* splitter);
-
-extern bool txvc_jtag_splitter_process(struct txvc_jtag_splitter* splitter,
-        int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo);
-
-
-
-
-
-enum txvc_jtag_splitter2_event {
-    JTAG_SPLITTER_NONE,
-    JTAG_SPLITTER_SHIFT_TMS,
-    JTAG_SPLITTER_SHIFT_TDI,
-    JTAG_SPLITTER_SHIFT_TDI_INCOMPLETE,
-    JTAG_SPLITTER_FLUSH_ALL,
-};
-
-typedef bool (*txvc_jtag_splitter2_callback) (
-        enum txvc_jtag_splitter2_event event,
-        const uint8_t *srcVec,
-        int fromBitIdx,
-        int toBitIdx,
-        uint8_t *dstVec,
-        void *extra);
-
-struct txvc_jtag_splitter2 {
     int _state;
-    txvc_jtag_splitter2_callback _cb;
+    txvc_jtag_splitter_callback _cb;
     void *_cbExtra;
 };
 
-extern bool txvc_jtag_splitter2_init(struct txvc_jtag_splitter2 *splitter,
-        txvc_jtag_splitter2_callback cb, void *cbExtra);
-extern bool txvc_jtag_splitter2_deinit(struct txvc_jtag_splitter2 *splitter);
-extern bool txvc_jtag_splitter2_process(struct txvc_jtag_splitter2 *splitter,
+/** Initialize splitter instance and reset TAP. */
+extern bool txvc_jtag_splitter_init(struct txvc_jtag_splitter *splitter,
+        txvc_jtag_splitter_callback cb, void *cbExtra);
+/** Release splitter resources and reset TAP. */
+extern bool txvc_jtag_splitter_deinit(struct txvc_jtag_splitter *splitter);
+/** Process combined JTAG stream */
+extern bool txvc_jtag_splitter_process(struct txvc_jtag_splitter *splitter,
         int numBits, const uint8_t* tms, const uint8_t* tdi, uint8_t* tdo);
+
+/**
+ * JTAG stream decoding events.
+ * Vector bit indices increase with vector octet numbers and from LSB to MSB within same octet.
+ */
+#define TXVC_JTAG_SPLIT_EVENTS(X) \
+    /** Shift TMS bits into TAP. */ \
+    X(shift_tms, \
+        const uint8_t *tms; /** TMS vector */ \
+        int fromBitIdx; /** First bit to shift. */ \
+        int toBitIdx;) /** One past the last bit to shift. */ \
+    /** Shift TDI/TDO into/from TAP. */ \
+    X(shift_tdi, \
+        const uint8_t *tdi; /** TDI vector */ \
+        uint8_t *tdo; /** TDO vector */ \
+        int fromBitIdx; /** First bit to shift from TDI and to shift into TDO. */ \
+        int toBitIdx; /** One past the last bit to shift from/into TDI/TDO. */ \
+        bool incomplete;) /** Leave TAP in JTAG shift state (keep TMS=0)
+                              when shifting the last bit. */ \
+    /**
+     * Flush all previous pending events to the TAP.
+     * 
+     * Vectors that are provided by shift events remain valid up to and including the first
+     * following flush event, thus allowing user to "accumulate" events instead of
+     * issuing shifts to TAP immediately.
+     * This event is a signal that vectors are about to become invalid and all accumulated events
+     * must be now issued to a TAP.
+     */ \
+    X(flush_all, \
+        char dummyStuffing;) /** Placeholder bits. */
+
+/** Specific even types. */
+#define AS_EVENT_STRUCT(name, fields) struct txvc_jtag_split_ ## name { fields };
+TXVC_JTAG_SPLIT_EVENTS(AS_EVENT_STRUCT)
+#undef AS_EVENT_STRUCT
+
+/** Enumeration to distinguish different events. */
+#define AS_ENUM(name, fields) JTAG_SPLIT_ ## name,
+enum txvc_jtag_split_event_kind {
+    TXVC_JTAG_SPLIT_EVENTS(AS_ENUM)
+};
+#undef AS_ENUM
+
+/**
+ * Callback event.
+ * User MUST NOT directly access any fileds here.
+ */
+struct txvc_jtag_split_event {
+    enum txvc_jtag_split_event_kind _kind;
+    union {
+#define AS_EVENT_ALTERNATIVE(name, fields) struct txvc_jtag_split_ ## name _ ## name;
+    TXVC_JTAG_SPLIT_EVENTS(AS_EVENT_ALTERNATIVE)
+#undef AS_EVENT_ALTERNATIVE
+    } _info;
+};
+
+/** "Cast" callback event to an actual event type. */
+#define AS_EVENT_CAST(name, fields) \
+    TXVC_USED static inline const struct txvc_jtag_split_ ## name * \
+    txvc_jtag_split_cast_to_ ## name(const struct txvc_jtag_split_event *event) { \
+        return event->_kind == JTAG_SPLIT_ ## name ? &event->_info._ ## name : NULL; \
+    }
+TXVC_JTAG_SPLIT_EVENTS(AS_EVENT_CAST)
+#undef AS_EVENT_CAST
+
+#undef TXVC_JTAG_SPLIT_EVENTS
 
