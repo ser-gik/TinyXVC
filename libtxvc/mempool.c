@@ -26,31 +26,62 @@
 
 #include "txvc/mempool.h"
 
+#include "txvc/defs.h"
 #include "txvc/log.h"
+
+#include <stdlib.h>
 
 TXVC_DEFAULT_LOG_TAG(mempool);
 
+static void mallocPoolRelease(unsigned char *start, unsigned char *end) {
+    TXVC_UNUSED(end);
+    free(start);
+}
+
+void txvc_mempool_init(struct txvc_mempool *mempool, size_t sz) {
+    void *p = malloc(sz);
+    if (!p) {
+        FATAL("Can not create %zu-bytes mempool\n", sz);
+    }
+    mempool->start = p;
+    mempool->end = mempool->start + sz;
+    mempool->head = mempool->start;
+    mempool->growDownward = 0;
+    mempool->fatalOom = 1;
+    mempool->release = mallocPoolRelease;
+}
+
+void txvc_mempool_deinit(struct txvc_mempool *mempool) {
+    if (mempool->release) {
+        mempool->release(mempool->start, mempool->end);
+        mempool->release = NULL;
+    }
+}
+
 void *txvc_mempool_alloc(struct txvc_mempool *mempool, size_t sz) {
-    if (mempool->_growDownward) {
-        if (mempool->_bufferStart + sz <= mempool->_head) {
-            mempool->_head -= sz;
-            return mempool->_head;
+    if (sz == 0) {
+        return NULL;
+    }
+    if (mempool->growDownward) {
+        if (mempool->start + sz <= mempool->head) {
+            mempool->head -= sz;
+            return mempool->head;
         }
     } else {
-        if (mempool->_head + sz <= mempool->_bufferEnd) {
-            void *ret = mempool->_head;
-            mempool->_head += sz;
+        if (mempool->head + sz <= mempool->end) {
+            void *ret = mempool->head;
+            mempool->head += sz;
             return ret;
         }
     }
 
-    if (mempool->_fatalOom) {
-        FATAL("OOM at %zu-bytes mempool\n", mempool->_bufferEnd - mempool->_bufferStart);
+    if (mempool->fatalOom) {
+        FATAL("OOM at %zu-bytes mempool\n", mempool->end - mempool->start);
     }
     return NULL;
 }
 
 void txvc_mempool_reclaim_all(struct txvc_mempool *mempool) {
-    mempool->_head = mempool->_growDownward ? mempool->_bufferEnd : mempool->_bufferStart;
+    mempool->head = mempool->growDownward ? mempool->end : mempool->start;
 }
 

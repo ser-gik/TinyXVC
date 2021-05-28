@@ -24,28 +24,39 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#pragma once
+#include "ttest/test.h"
+#include "txvc/mempool.h"
 
-#include <stddef.h>
+TEST_SUITE(Mempool)
 
-/**
- * Simple arena allocator that returns unaligned memory blocks.
- * Allocated blocks can be freed only all at once.
- *
- * User MUST NOT access any field directly.
- */
-struct txvc_mempool {
-    unsigned char *start;
-    unsigned char *end;
-    unsigned char *head;
-    unsigned fatalOom : 1;
-    unsigned growDownward : 1;
-    void (*release)(unsigned char *start, unsigned char *end);
-};
+static struct txvc_mempool gUut;
 
-extern void txvc_mempool_init(struct txvc_mempool *mempool, size_t sz);
-extern void txvc_mempool_deinit(struct txvc_mempool *mempool);
+DO_BEFORE_EACH_CASE() {
+    txvc_mempool_init(&gUut, 512);
+}
 
-extern void *txvc_mempool_alloc(struct txvc_mempool *mempool, size_t sz);
-extern void txvc_mempool_reclaim_all(struct txvc_mempool *mempool);
+DO_AFTER_EACH_CASE() {
+    txvc_mempool_deinit(&gUut);
+}
+
+TEST_CASE(AllocDifferentSizes_BlockAllocatedNoCrash) {
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 1) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 3) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 5) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 7) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 13) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 400) != NULL);
+}
+
+TEST_CASE(AllocEdgeCases_Ok) {
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 0) == NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 512) != NULL);
+}
+
+TEST_CASE(AllocAllreclaimAllocAgain_BlocksAllocatedNoCrash) {
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 512) != NULL);
+    txvc_mempool_reclaim_all(&gUut);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 256) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 256) != NULL);
+}
 
