@@ -29,6 +29,7 @@
 #include "txvc/log.h"
 #include "txvc/defs.h"
 #include "txvc/bit_vector.h"
+#include "txvc/mempool.h"
 
 #include <libftdi1/ftdi.h>
 
@@ -120,17 +121,6 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
     return true;
 }
 
-struct driver {
-    struct ft_params params;
-    struct ftdi_context ctx;
-    struct txvc_jtag_splitter jtagSplitter;
-    int chipBufferBytes;
-    bool highSpeedCapable;
-    unsigned lastTdi : 1;
-};
-
-static struct driver gFtdi;
-
 
 struct readonly_granule {
     const uint8_t* data;
@@ -188,6 +178,53 @@ static bool do_transfer(struct ftdi_context* ctx,
     return do_transfer_granular(ctx, &out, 1, &in, 1);
 }
 
+static bool ensure_synced(struct ftdi_context* ctx) {
+    /* Send bad opcode and check that chip responds with "BadCommand" */
+    unsigned char resp[2];
+    return do_transfer(ctx, (unsigned char[]){ 0xab, }, 1, resp, sizeof(resp))
+        && resp[0] == 0xfa && resp[1] == 0xab;
+}
+
+struct bitcopy_params {
+    const uint8_t* src;
+    int fromBit;
+    uint8_t* dst;
+    int toBit;
+    int numBits;
+};
+
+#define GRANULES_BUFFER_CAPACITY 1000
+
+struct granules_buffer {
+    struct readonly_granule outgoing[GRANULES_BUFFER_CAPACITY + 1];
+    int numOutgoingGranules;
+    int totalOutgoingBytes;
+    struct granule incoming[GRANULES_BUFFER_CAPACITY];
+    int numIncomingGranules;
+    int totalIncomingBytes;
+    struct bitcopy_params postTransferCopy[GRANULES_BUFFER_CAPACITY];
+    int numPostTransferCopies;
+};
+
+struct driver {
+    struct ft_params params;
+    int chipBufferBytes;
+    bool highSpeedCapable;
+    struct ftdi_context ctx;
+    struct txvc_jtag_splitter jtagSplitter;
+    struct txvc_mempool granulesPool;
+    struct granules_buffer granulesBuffer;
+    unsigned lastTdi : 1;
+};
+
+static struct driver gFtdi;
+
+
+
+
+
+
+
 static inline int min(int a, int b) {
     return a < b ? a : b;
 }
@@ -212,63 +249,127 @@ static void copy_bits(const uint8_t* src, int fromIdx,
     }
 }
 
-static bool ensure_synced(struct ftdi_context* ctx) {
-    /* Send bad opcode and check that chip responds with "BadCommand" */
-    unsigned char resp[2];
-    return do_transfer(ctx, (unsigned char[]){ 0xab }, 1, resp, sizeof(resp))
-        && resp[0] == 0xfa && resp[1] == 0xab;
+static void resetGranulesBuffer(struct granules_buffer *gb) {
+    gb->numOutgoingGranules = 0;
+    gb->totalOutgoingBytes = 0;
+    gb->numIncomingGranules = 0;
+    gb->totalIncomingBytes = 0;
+    gb->numPostTransferCopies = 0;
 }
 
-static bool tmsSenderFn(const uint8_t* tms, int fromBitIdx, int toBitIdx, void* extra) {
+static int maxGranuleSize(const struct driver *d) {
+    return d->chipBufferBytes;
+}
+
+static bool flushGranulesBuffer(struct driver *d) {
+    struct granules_buffer *gb = &d->granulesBuffer;
+    VERBOSE("Flushing granules: %d outgoing (%d bytes), %d incoming (%d bytes)"
+            ", %d post-transfer copy tasks\n",
+            gb->numOutgoingGranules, gb->totalOutgoingBytes,
+            gb->numIncomingGranules, gb->totalIncomingBytes,
+            gb->numPostTransferCopies);
+    if (gb->numIncomingGranules >= GRANULES_BUFFER_CAPACITY
+            || gb->numOutgoingGranules >= GRANULES_BUFFER_CAPACITY) {
+        WARN("%s: buffer is full, consider increasing capacity\n", __func__);
+    }
+
+    if (!do_transfer_granular(&d->ctx, gb->outgoing, gb->numOutgoingGranules,
+                gb->incoming, gb->numIncomingGranules)) {
+        return false;
+    }
+
+    for (int i = 0; i < gb->numPostTransferCopies; i++) {
+        const struct bitcopy_params *bp = &gb->postTransferCopy[i];
+        copy_bits(bp->src, bp->fromBit, bp->dst, bp->toBit, bp->numBits, false);
+    }
+    resetGranulesBuffer(gb);
+    return true;
+}
+
+static bool appendToGranuleBuffer(struct driver *d,
+        const uint8_t *outgoing, int outgoingBytes,
+        uint8_t *incoming, int incomingBytes,
+        const struct bitcopy_params *postTransferCopy) {
+    ALWAYS_ASSERT(outgoingBytes <= maxGranuleSize(d));
+    ALWAYS_ASSERT(incomingBytes <= maxGranuleSize(d));
+
+    VERBOSE("Appening granule: %d outgoing bytes, %d incoming bytes, %s post-transfer copy task\n",
+            outgoingBytes, incomingBytes, postTransferCopy ? "with" : "no");
+    struct granules_buffer *gb = &d->granulesBuffer;
+    bool flush = false;
+    if (outgoingBytes > 0 && (gb->numOutgoingGranules >= GRANULES_BUFFER_CAPACITY
+                                || gb->totalOutgoingBytes + outgoingBytes > d->chipBufferBytes)) {
+        flush = true;
+    }
+    if (incomingBytes > 0 && (gb->numIncomingGranules >= GRANULES_BUFFER_CAPACITY
+                                || gb->totalIncomingBytes + incomingBytes > d->chipBufferBytes)) {
+        flush = true;
+    }
+    if (postTransferCopy && gb->numPostTransferCopies >= GRANULES_BUFFER_CAPACITY) {
+        flush = true;
+    }
+
+    if (flush && !flushGranulesBuffer(d)) {
+        return false;
+    }
+
+    if (outgoingBytes > 0) {
+        gb->outgoing[gb->numOutgoingGranules].data = outgoing;
+        gb->outgoing[gb->numOutgoingGranules].size = outgoingBytes;
+        gb->totalOutgoingBytes += outgoingBytes;
+        gb->numOutgoingGranules++;
+    }
+    if (incomingBytes > 0) {
+        gb->incoming[gb->numIncomingGranules].data = incoming;
+        gb->incoming[gb->numIncomingGranules].size = incomingBytes;
+        gb->totalIncomingBytes += incomingBytes;
+        gb->numIncomingGranules++;
+    }
+    if (postTransferCopy) {
+        gb->postTransferCopy[gb->numPostTransferCopies] = *postTransferCopy;
+        gb->numPostTransferCopies++;
+    }
+    return true;
+}
+
+static bool appendTmsShiftToGranulesBuffer(struct driver *d,
+        const uint8_t* tms, int fromBitIdx, int toBitIdx) {
     ALWAYS_ASSERT(fromBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
-    struct driver* d = extra;
+    while (fromBitIdx < toBitIdx) {
+        const int maxTmsCommandsPerGranule = maxGranuleSize(d) / 3;
+        const int tmsCommandsNeeded = (toBitIdx - fromBitIdx) / 6 + !!((toBitIdx - fromBitIdx) % 6);
+        const int numTmsCommands = min(maxTmsCommandsPerGranule, tmsCommandsNeeded);
 
-    /* Send TMS commands in batches to minimize chip timeout impact for long vectors. */
-    uint8_t cmdBuf[4096];
-    const size_t cmdBufMax = d->chipBufferBytes;
-    ALWAYS_ASSERT(sizeof(cmdBuf) >= cmdBufMax);
-    size_t cmdBufHead = 0;
-    for (;;) {
-        /*
-         * Append next TMS command to a buffer.
-         * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
-         * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
-         * after command is completed.
-         */
-        const int maxTmsBitsPerCommand = 6;
-        const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
-        uint8_t pattern = (!!d->lastTdi) << 7;
-        copy_bits(tms, fromBitIdx, &pattern, 0, bitsToTransfer, true);
-        cmdBuf[cmdBufHead++] = MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE;
-        cmdBuf[cmdBufHead++] = bitsToTransfer - 1;
-        cmdBuf[cmdBufHead++] = pattern;
-        fromBitIdx += bitsToTransfer;
-
-        const size_t tmsCmdSz = 3;
-        const bool cmdBufFull = (cmdBufMax - cmdBufHead) < tmsCmdSz;
-        const bool finish = fromBitIdx >= toBitIdx;
-        if (cmdBufFull || finish) {
-            if (!do_transfer(&d->ctx, cmdBuf, cmdBufHead, NULL, 0)) {
-                return false;
-            }
-            if (finish) {
-                return true;
-            }
-            cmdBufHead = 0;
+        uint8_t *cmds = txvc_mempool_alloc_unaligned(&d->granulesPool, 3 * numTmsCommands);
+        for (int i = 0; i < numTmsCommands; i++) {
+            /*
+             * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
+             * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
+             * after command is completed.
+             */
+            const int maxTmsBitsPerCommand = 6;
+            const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
+            cmds[i * 3 + 0] = MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+            cmds[i * 3 + 1] = bitsToTransfer - 1;
+            cmds[i * 3 + 2] = (!!d->lastTdi) << 7;
+            copy_bits(tms, fromBitIdx, &cmds[i * 3 + 2], 0, bitsToTransfer, true);
+            fromBitIdx += bitsToTransfer;
+        }
+        if (!appendToGranuleBuffer(d, cmds, 3 * numTmsCommands, NULL, 0, NULL)) {
+            return false;
         }
     }
+    return true;
 }
 
-static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx,
-        bool lastTmsBitHigh, void* extra) {
+static bool appendTdiShiftToGranulesBuffer(struct driver *d,
+        const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx, bool lastTmsBitHigh) {
     ALWAYS_ASSERT(fromBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
-
-    struct driver* d = extra;
 
     /*
      * To minimize copying as much as possible we divide vectors onto ranges that have their
@@ -295,45 +396,23 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
     const int innerEndIdx = leadingOnly ? -1 : lastBitIdx - lastBitIdx % 8;
     const int numTrailingBits = leadingOnly ? 0 : lastBitIdx % 8;
 
-    /*
-     * Find out maximal amount of whole bytes for a one round such that there is always
-     * a bit of extra space for leading, trailing and last bit commands.
-     * This just simplifies a loop below.
-     */
-    const int maxInnerOctetsPerTransfer = d->chipBufferBytes
-        - 3 /* Command for sending heading bits */
-        - 3 /* Command for sending middle bytes w/o payload */
-        - 3 /* Command for sending trailing bits except for the last one */
-        - 3 /* Command for sending the last trailing bit along with TMS bit */
-        ;
-
     for (int curIdx = fromBitIdx; curIdx < toBitIdx;) {
-        /*
-         * Setup and issue transfer. Stuff as much as possible into one to minimize a number of
-         * underlying USB transfers. Possibly there can be different ranges within same transfer.
-         */
-        uint8_t leadingBitsCmd[3], innerBitsCmdHeader[3], trailingBitsCmd[3], lastBitCmd[3];
-        uint8_t leadingTdoBits, trailingTdoBits, lastTdoBit;
-        bool withLeading = false, withTrailing = false, withLast = false;
-        struct readonly_granule out[5];
-        struct granule in[4];
-        int numOutGranules = 0;
-        int numInGranules = 0;
-
         if (curIdx == fromBitIdx && numLeadingBits > 0) {
-            withLeading = true;
-            leadingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
-                                        | MPSSE_BITMODE | MPSSE_WRITE_NEG;
-            leadingBitsCmd[1] = numLeadingBits - 1;
-            leadingBitsCmd[2] = tdi[fromBitIdx / 8] >> (fromBitIdx % 8);
-            out[numOutGranules++] = (struct readonly_granule){
-                .data = leadingBitsCmd,
-                .size = 3,
+            uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
+            cmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+            cmd[1] = numLeadingBits - 1;
+            cmd[2] = tdi[fromBitIdx / 8] >> (fromBitIdx % 8);
+            uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
+            struct bitcopy_params postCopy = {
+                .src = received,
+                .fromBit = 8 - numLeadingBits,
+                .dst = tdo,
+                .toBit = fromBitIdx,
+                .numBits = numLeadingBits,
             };
-            in[numInGranules++] = (struct granule){
-                .data = &leadingTdoBits,
-                .size = 1,
-            };
+            if (!appendToGranuleBuffer(d, cmd, 3, received, 1, &postCopy)) {
+                return false;
+            }
             curIdx += numLeadingBits;
         }
         if (curIdx < lastBitIdx) {
@@ -341,109 +420,87 @@ static bool tdiSenderFn(const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int to
                 ALWAYS_ASSERT(innerBeginIdx % 8 == 0);
                 ALWAYS_ASSERT(innerEndIdx % 8 == 0);
                 ALWAYS_ASSERT(curIdx % 8 == 0);
-                const int innerOctetsToSend =
-                    min((innerEndIdx - curIdx) / 8, maxInnerOctetsPerTransfer);
-                innerBitsCmdHeader[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
-                                                | MPSSE_WRITE_NEG;
-                innerBitsCmdHeader[1] = ((innerOctetsToSend - 1) >> 0) & 0xff;
-                innerBitsCmdHeader[2] = ((innerOctetsToSend - 1) >> 8) & 0xff;
-                out[numOutGranules++] = (struct readonly_granule){
-                    .data = innerBitsCmdHeader,
-                    .size = 3,
-                };
-                out[numOutGranules++] = (struct readonly_granule){
-                    .data = tdi + curIdx / 8,
-                    .size = innerOctetsToSend,
-                };
-                in[numInGranules++] = (struct granule){
-                    .data = tdo + curIdx / 8,
-                    .size = innerOctetsToSend,
-                };
+                const int innerOctetsToSend = min((innerEndIdx - curIdx) / 8, maxGranuleSize(d));
+                uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
+                cmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG;
+                cmd[1] = ((innerOctetsToSend - 1) >> 0) & 0xff;
+                cmd[2] = ((innerOctetsToSend - 1) >> 8) & 0xff;
+                if (!appendToGranuleBuffer(d, cmd, 3, NULL, 0, NULL)) {
+                    return false;
+                }
+                if (!appendToGranuleBuffer(d, tdi + curIdx / 8, innerOctetsToSend,
+                                              tdo + curIdx / 8, innerOctetsToSend, NULL)) {
+                    return false;
+                }
                 curIdx += innerOctetsToSend * 8;
             }
             if (curIdx == innerEndIdx && numTrailingBits > 0) {
-                withTrailing = true;
-                trailingBitsCmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB
-                                            | MPSSE_BITMODE | MPSSE_WRITE_NEG;
-                trailingBitsCmd[1] = numTrailingBits - 1;
-                trailingBitsCmd[2] = tdi[innerEndIdx / 8];
-                out[numOutGranules++] = (struct readonly_granule){
-                    .data = trailingBitsCmd,
-                    .size = 3,
+                uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
+                cmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+                cmd[1] = numTrailingBits - 1;
+                cmd[2] = tdi[innerEndIdx / 8];
+                uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
+                struct bitcopy_params postCopy = {
+                    .src = received,
+                    .fromBit = 8 - numTrailingBits,
+                    .dst = tdo,
+                    .toBit = innerEndIdx,
+                    .numBits = numTrailingBits,
                 };
-                in[numInGranules++] = (struct granule){
-                    .data = &trailingTdoBits,
-                    .size = 1,
-                };
+                if (!appendToGranuleBuffer(d, cmd, 3, received, 1, &postCopy)) {
+                    return false;
+                }
                 curIdx += numTrailingBits;
             }
         }
 
         if (curIdx == lastBitIdx) {
-            withLast = true;
-           // numOutGranules = 0;
-           // numInGranules = 0;
             const int lastTdiBit = !!get_bit(tdi, lastBitIdx);
             const int lastTmsBit = !!lastTmsBitHigh;
-            lastBitCmd[0] = MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE;
-            lastBitCmd[1] = 0x00;
-            lastBitCmd[2] = (lastTdiBit << 7) | (lastTmsBit) << 1 | lastTmsBit;
-            out[numOutGranules++] = (struct readonly_granule){
-                .data = lastBitCmd,
-                .size = 3,
+            uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
+            cmd[0] = MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+            cmd[1] = 0x00; /* Send 1 bit */
+            cmd[2] = (lastTdiBit << 7) | (lastTmsBit << 1) | lastTmsBit;
+            uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
+            struct bitcopy_params postCopy = {
+                .src = received,
+                .fromBit = 7, /* TDO is shifted in from the right side */
+                .dst = tdo,
+                .toBit = lastBitIdx,
+                .numBits = 1,
             };
-            in[numInGranules++] = (struct granule){
-                .data = &lastTdoBit,
-                .size = 1,
-            };
+            if (!appendToGranuleBuffer(d, cmd, 3, received, 1, &postCopy)) {
+                return false;
+            }
+
+            /* Update global last TDI bit so that future TMS commands will use proper value when enqueued. */
+            d->lastTdi = lastTdiBit;
             curIdx += 1;
-
-           // /* TODO having TMS command in the same batch somehow blocks writes */
-           // if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
-           //     return false;
-           // }
-        }
-
-        if (!do_transfer_granular(&d->ctx, out, numOutGranules, in, numInGranules)) {
-            return false;
-        }
-
-        if (withLeading) {
-            copy_bits(&leadingTdoBits, 8 - numLeadingBits,
-                    tdo, fromBitIdx, numLeadingBits, false);
-        }
-        if (withTrailing) {
-            copy_bits(&trailingTdoBits, 8 - numTrailingBits,
-                    tdo, innerEndIdx, numTrailingBits, false);
-        }
-        if (withLast) {
-            const int lastTdi = !!get_bit(tdi, lastBitIdx);
-            d->lastTdi = lastTdi;
-            const bool lastTdo = get_bit(&lastTdoBit, 7); /* TDO is shifted in from the right. */
-            set_bit(tdo, lastBitIdx, lastTdo);
         }
     }
     return true;
 }
 
 static bool jtagSplitterCallback(const struct txvc_jtag_split_event *event, void *extra) {
+    struct driver *d = extra;
     {
         const struct txvc_jtag_split_shift_tms *e = txvc_jtag_split_cast_to_shift_tms(event);
         if (e) {
-            return tmsSenderFn(e->tms, e->fromBitIdx, e->toBitIdx, extra);
+            return appendTmsShiftToGranulesBuffer(d, e->tms, e->fromBitIdx, e->toBitIdx);
         }
     }
     {
         const struct txvc_jtag_split_shift_tdi *e = txvc_jtag_split_cast_to_shift_tdi(event);
         if (e) {
-            return tdiSenderFn(e->tdi, e->tdo, e->fromBitIdx, e->toBitIdx, !e->incomplete, extra);
+            return appendTdiShiftToGranulesBuffer(d, e->tdi, e->tdo, e->fromBitIdx,e->toBitIdx, !e->incomplete);
         }
     }
     {
         const struct txvc_jtag_split_flush_all *e = txvc_jtag_split_cast_to_flush_all(event);
         if (e) {
-            WARN("Flush event ignored\n");
-            return true;
+            bool res = flushGranulesBuffer(d);
+            txvc_mempool_reclaim_all(&d->granulesPool);
+            return res;
         }
     }
     TXVC_UNREACHABLE();
@@ -473,7 +530,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     REQUIRE_FTDI_SUCCESS_(ftdi_usb_purge_buffers(&d->ctx) , bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_event_char(&d->ctx, 0, 0) , bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_error_char(&d->ctx, 0, 0) , bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&d->ctx, 1), bail_usb_close);
+    REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&d->ctx, 16), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&d->ctx, SIO_RTS_CTS_HS), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET), bail_usb_close);
     REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_MPSSE), bail_usb_close);
@@ -486,13 +543,16 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             d->highSpeedCapable = true;
             break;
         case TYPE_232H:
-            d->chipBufferBytes = 1024 / 2; /* TODO why this doesn't work with documented size? */
+            d->chipBufferBytes = 1024;
             d->highSpeedCapable = true;
             break;
         default:
             ERROR("Unknown chip type: %d\n", d->ctx.type);
             goto bail_reset_mode;
     }
+
+    txvc_mempool_init(&d->granulesPool, 64 * 1024);
+    resetGranulesBuffer(&d->granulesBuffer);
 
     uint8_t setupCmds[] = {
         SET_BITS_LOW,
@@ -524,6 +584,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
         goto bail_reset_mode;
     }
     d->lastTdi = 0;
+
     if (!txvc_jtag_splitter_init(&d->jtagSplitter, jtagSplitterCallback, d)) {
         goto bail_reset_mode;
     }

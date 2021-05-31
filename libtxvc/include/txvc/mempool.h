@@ -46,6 +46,6 @@ struct txvc_mempool {
 extern void txvc_mempool_init(struct txvc_mempool *mempool, size_t sz);
 extern void txvc_mempool_deinit(struct txvc_mempool *mempool);
 
-extern void *txvc_mempool_alloc(struct txvc_mempool *mempool, size_t sz);
+extern unsigned char *txvc_mempool_alloc_unaligned(struct txvc_mempool *mempool, size_t sz);
 extern void txvc_mempool_reclaim_all(struct txvc_mempool *mempool);
 

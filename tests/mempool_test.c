@@ -40,23 +40,23 @@ DO_AFTER_EACH_CASE() {
 }
 
 TEST_CASE(AllocDifferentSizes_BlockAllocatedNoCrash) {
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 1) != NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 3) != NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 5) != NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 7) != NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 13) != NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 400) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 1) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 3) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 5) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 7) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 13) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 400) != NULL);
 }
 
 TEST_CASE(AllocEdgeCases_Ok) {
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 0) == NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 512) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 0) == NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 512) != NULL);
 }
 
 TEST_CASE(AllocAllreclaimAllocAgain_BlocksAllocatedNoCrash) {
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 512) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 512) != NULL);
     txvc_mempool_reclaim_all(&gUut);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 256) != NULL);
-    ASSERT_TRUE(txvc_mempool_alloc(&gUut, 256) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 256) != NULL);
+    ASSERT_TRUE(txvc_mempool_alloc_unaligned(&gUut, 256) != NULL);
 }
 

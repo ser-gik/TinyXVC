@@ -58,7 +58,7 @@ void txvc_mempool_deinit(struct txvc_mempool *mempool) {
     }
 }
 
-void *txvc_mempool_alloc(struct txvc_mempool *mempool, size_t sz) {
+unsigned char *txvc_mempool_alloc_unaligned(struct txvc_mempool *mempool, size_t sz) {
     if (sz == 0) {
         return NULL;
     }
