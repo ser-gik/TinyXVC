@@ -10,5 +10,6 @@ add_txvc_library(Drivers
     DEPENDS
         Txvc
         ftdi1
+        libftd2xx
     )
 

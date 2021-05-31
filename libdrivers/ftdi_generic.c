@@ -32,6 +32,7 @@
 #include "txvc/mempool.h"
 
 #include <libftdi1/ftdi.h>
+#include <ftd2xx.h>
 
 #include <string.h>
 #include <stdbool.h>
@@ -506,10 +507,59 @@ static bool jtagSplitterCallback(const struct txvc_jtag_split_event *event, void
     TXVC_UNREACHABLE();
 }
 
+
+static const char *ftStatusName(FT_STATUS s) {
+    switch (s) {
+#define CASE(val) case val: return #val
+        CASE(FT_OK);
+        CASE(FT_INVALID_HANDLE);
+        CASE(FT_DEVICE_NOT_FOUND);
+        CASE(FT_DEVICE_NOT_OPENED);
+        CASE(FT_IO_ERROR);
+        CASE(FT_INSUFFICIENT_RESOURCES);
+        CASE(FT_INVALID_PARAMETER);
+        CASE(FT_INVALID_BAUD_RATE);
+        CASE(FT_DEVICE_NOT_OPENED_FOR_ERASE);
+        CASE(FT_DEVICE_NOT_OPENED_FOR_WRITE);
+        CASE(FT_FAILED_TO_WRITE_DEVICE);
+        CASE(FT_EEPROM_READ_FAILED);
+        CASE(FT_EEPROM_WRITE_FAILED);
+        CASE(FT_EEPROM_ERASE_FAILED);
+        CASE(FT_EEPROM_NOT_PRESENT);
+        CASE(FT_EEPROM_NOT_PROGRAMMED);
+        CASE(FT_INVALID_ARGS);
+        CASE(FT_NOT_SUPPORTED);
+        CASE(FT_OTHER_ERROR);
+        CASE(FT_DEVICE_LIST_NOT_READY);
+#undef CASE
+        default:
+            return "???";
+    }
+}
+
 static bool activate(int numArgs, const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
 
     if (!load_config(numArgs, argNames, argValues, &d->params)) return false;
+
+#define REQUIRE_D2XX_SUCCESS_(d2xxCallExpr, cleanupLabel)                                          \
+    do {                                                                                           \
+        FT_STATUS status = (d2xxCallExpr);                                                         \
+        if (status != FT_OK) {                                                                     \
+            ERROR("Failed: %s: %s\n", #d2xxCallExpr, ftStatusName(status));                        \
+            goto cleanupLabel;                                                                     \
+        }                                                                                          \
+    } while (0)
+
+    DWORD d2xxVersion;
+    REQUIRE_D2XX_SUCCESS_(FT_GetLibraryVersion(&d2xxVersion), bail_noop);
+    INFO("Using d2xx v.%u.%u.%u\n",
+            (d2xxVersion >> 16) & 0xffu,
+            (d2xxVersion >>  8) & 0xffu,
+            (d2xxVersion >>  0) & 0xffu);
+
+
+
 
     struct ftdi_version_info info = ftdi_get_library_version();
     INFO("Using libftdi \"%s %s\"\n", info.version_str, info.snapshot_str);
