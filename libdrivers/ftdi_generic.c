@@ -42,14 +42,21 @@
 
 TXVC_DEFAULT_LOG_TAG(ftdiGeneric);
 
-#define PIN_ROLE_LIST_ITEMS(X)                                                                     \
-    X("driver_low", PIN_ROLE_OTHER_DRIVER_LOW, "permanent low level driver")                       \
-    X("driver_high", PIN_ROLE_OTHER_DRIVER_HIGH, "permanent high level driver")                    \
-    X("ignored", PIN_ROLE_OTHER_IGNORED, "ignored pin, configured as input")                       \
+/*
+ * Driver configuration loader.
+ */
+#define FTDI_SUPPORTED_DEVICES_LIST_ITEMS(X)                                                       \
+    X("ft2232h", FT_DEVICE_2232H, "FT2232H chip")                                                  \
+    X("ft232h", FT_DEVICE_232H, "FT232H chip")                                                     \
 
 #define FTDI_INTERFACE_LIST_ITEMS(X)                                                               \
     X("A", INTERFACE_A, "FTDI' ADBUS channel")                                                     \
     X("B", INTERFACE_B, "FTDI' BDBUS channel")                                                     \
+
+#define PIN_ROLE_LIST_ITEMS(X)                                                                     \
+    X("driver_low", PIN_ROLE_OTHER_DRIVER_LOW, "permanent low level driver")                       \
+    X("driver_high", PIN_ROLE_OTHER_DRIVER_HIGH, "permanent high level driver")                    \
+    X("ignored", PIN_ROLE_OTHER_IGNORED, "ignored pin, configured as input")                       \
 
 #define AS_ENUM_MEMBER(name, enumVal, descr) enumVal,
 
@@ -62,14 +69,19 @@ enum pin_role {
 
 #define RETURN_ENUM_IF_NAME_MATCHES(name, enumVal, descr) if (strcmp(name, s) == 0) return enumVal;
 
-static enum pin_role str_to_pin_role(const char *s) {
-    PIN_ROLE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
-    return PIN_ROLE_INVALID;
+static FT_DEVICE str_to_ft_device(const char *s) {
+    FTDI_SUPPORTED_DEVICES_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
+    return -1;
 }
 
 static enum ftdi_interface str_to_ftdi_interface(const char *s) {
     FTDI_INTERFACE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
     return -1;
+}
+
+static enum pin_role str_to_pin_role(const char *s) {
+    PIN_ROLE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
+    return PIN_ROLE_INVALID;
 }
 
 #undef RETURN_ENUM_IF_NAME_MATCHES
@@ -81,6 +93,7 @@ static int str_to_usb_id(const char *s) {
 }
 
 struct ft_params {
+    FT_DEVICE device;
     int vid;
     int pid;
     enum ftdi_interface channel;
@@ -88,6 +101,7 @@ struct ft_params {
 };
 
 #define PARAM_LIST_ITEMS(X)                                                                        \
+    X("device", device, str_to_ft_device, > 0, "FTDI chip type")                                   \
     X("vid", vid, str_to_usb_id, > 0, "USB device vendor ID")                                      \
     X("pid", pid, str_to_usb_id, > 0, "USB device product ID")                                     \
     X("channel", channel, str_to_ftdi_interface, >= 0, "FTDI channel to use")                      \
@@ -99,6 +113,7 @@ struct ft_params {
 static bool load_config(int numArgs, const char **argNames, const char **argValues,
                             struct ft_params *out) {
     memset(out, 0, sizeof(*out));
+    out->device = -1;
     out->channel = -1;
 
     for (int i = 0; i < numArgs; i++) {
@@ -122,7 +137,9 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
     return true;
 }
 
-
+/*
+ * Driver implementation.
+ */
 struct readonly_granule {
     const uint8_t* data;
     int size;
@@ -132,59 +149,6 @@ struct granule {
     uint8_t* data;
     int size;
 };
-
-static bool do_transfer_granular(struct ftdi_context* ctx,
-        const struct readonly_granule* outgoingGranules, int numOutgoingGranules,
-        const struct granule* incomingGranules, int numIncomingGranules) {
-    for (int i = 0; i < numOutgoingGranules; i++) {
-        const struct readonly_granule* g = outgoingGranules + i;
-        if (g->size > 0) {
-            struct ftdi_transfer_control* ctl = ftdi_write_data_submit(ctx,
-                    (uint8_t*)g->data, g->size);
-            if (!ctl) {
-                ERROR("Failed to send data: %s\n", ftdi_get_error_string(ctx));
-                return false;
-            }
-            int sz = ftdi_transfer_data_done(ctl);
-            if (sz != g->size) {
-                ERROR("Failed to send data: %s (res: %d)\n", ftdi_get_error_string(ctx), sz);
-                return false;
-            }
-        }
-    }
-    for (int i = 0; i < numIncomingGranules; i++) {
-        const struct granule* g = incomingGranules + i;
-        if (g->size > 0) {
-            struct ftdi_transfer_control* ctl = ftdi_read_data_submit(ctx,
-                    g->data, g->size);
-            if (!ctl) {
-                ERROR("Failed to receive data: %s\n", ftdi_get_error_string(ctx));
-                return false;
-            }
-            int sz = ftdi_transfer_data_done(ctl);
-            if (sz != g->size) {
-                ERROR("Failed to receive data: %s (res: %d)\n", ftdi_get_error_string(ctx), sz);
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-static bool do_transfer(struct ftdi_context* ctx,
-        const uint8_t* outgoing, int outgoingSz,
-        uint8_t* incoming, int incomingSz) {
-    const struct readonly_granule out = { .data = outgoing, .size = outgoingSz, };
-    const struct granule in = { .data = incoming, .size = incomingSz, };
-    return do_transfer_granular(ctx, &out, 1, &in, 1);
-}
-
-static bool ensure_synced(struct ftdi_context* ctx) {
-    /* Send bad opcode and check that chip responds with "BadCommand" */
-    unsigned char resp[2];
-    return do_transfer(ctx, (unsigned char[]){ 0xab, }, 1, resp, sizeof(resp))
-        && resp[0] == 0xfa && resp[1] == 0xab;
-}
 
 struct bitcopy_params {
     const uint8_t* src;
@@ -211,7 +175,7 @@ struct driver {
     struct ft_params params;
     int chipBufferBytes;
     bool highSpeedCapable;
-    struct ftdi_context ctx;
+    FT_HANDLE ftHandle;
     struct txvc_jtag_splitter jtagSplitter;
     struct txvc_mempool granulesPool;
     struct granules_buffer granulesBuffer;
@@ -219,11 +183,6 @@ struct driver {
 };
 
 static struct driver gFtdi;
-
-
-
-
-
 
 
 static inline int min(int a, int b) {
@@ -250,6 +209,96 @@ static void copy_bits(const uint8_t* src, int fromIdx,
     }
 }
 
+static const char *ftStatusName(FT_STATUS s) {
+    switch (s) {
+#define CASE(val) case val: return #val
+        CASE(FT_OK);
+        CASE(FT_INVALID_HANDLE);
+        CASE(FT_DEVICE_NOT_FOUND);
+        CASE(FT_DEVICE_NOT_OPENED);
+        CASE(FT_IO_ERROR);
+        CASE(FT_INSUFFICIENT_RESOURCES);
+        CASE(FT_INVALID_PARAMETER);
+        CASE(FT_INVALID_BAUD_RATE);
+        CASE(FT_DEVICE_NOT_OPENED_FOR_ERASE);
+        CASE(FT_DEVICE_NOT_OPENED_FOR_WRITE);
+        CASE(FT_FAILED_TO_WRITE_DEVICE);
+        CASE(FT_EEPROM_READ_FAILED);
+        CASE(FT_EEPROM_WRITE_FAILED);
+        CASE(FT_EEPROM_ERASE_FAILED);
+        CASE(FT_EEPROM_NOT_PRESENT);
+        CASE(FT_EEPROM_NOT_PROGRAMMED);
+        CASE(FT_INVALID_ARGS);
+        CASE(FT_NOT_SUPPORTED);
+        CASE(FT_OTHER_ERROR);
+        CASE(FT_DEVICE_LIST_NOT_READY);
+#undef CASE
+        default:
+            return "???";
+    }
+}
+
+static bool do_transfer_granular(FT_HANDLE ft,
+        const struct readonly_granule* outgoingGranules, int numOutgoingGranules,
+        const struct granule* incomingGranules, int numIncomingGranules) {
+    for (int i = 0; i < numOutgoingGranules; i++) {
+        const struct readonly_granule* g = outgoingGranules + i;
+        if (g->size > 0) {
+            DWORD written;
+            FT_STATUS status = FT_Write(ft, (LPVOID *) g->data, g->size, &written);
+            if (!FT_SUCCESS(status)) {
+                ERROR("Failed to send data: %s\n", ftStatusName(status));
+                return false;
+            }
+            if (written != (DWORD) g->size) {
+                ERROR("Sent only %u bytes of %d\n", written, g->size);
+                return false;
+            }
+        }
+    }
+
+    if (0) {
+        DWORD written;
+        uint8_t sendImmediate = SEND_IMMEDIATE;
+        if (!FT_SUCCESS(FT_Write(ft, &sendImmediate, 1, &written)) || written != 1) {
+            ERROR("Failed to request immediate response\n");
+            return false;
+        }
+    }
+
+    for (int i = 0; i < numIncomingGranules; i++) {
+        const struct granule* g = incomingGranules + i;
+        if (g->size > 0) {
+            DWORD read;
+            FT_STATUS status = FT_Read(ft, g->data, g->size, &read);
+            if (!FT_SUCCESS(status)) {
+                ERROR("Failed to receive data: %s\n", ftStatusName(status));
+                return false;
+            }
+            if (read != (DWORD) g->size) {
+                ERROR("Received only %u bytes of %d\n", read, g->size);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool do_transfer(FT_HANDLE ft,
+        const uint8_t* outgoing, int outgoingSz,
+        uint8_t* incoming, int incomingSz) {
+    const struct readonly_granule out = { .data = outgoing, .size = outgoingSz, };
+    const struct granule in = { .data = incoming, .size = incomingSz, };
+    return do_transfer_granular(ft, &out, 1, &in, 1);
+}
+
+static bool ensure_synced(FT_HANDLE ft) {
+    /* Send bad opcode and check that chip responds with "BadCommand" */
+    unsigned char resp[2];
+    return do_transfer(ft, (unsigned char[]){ 0xab, }, 1, resp, sizeof(resp))
+        && resp[0] == 0xfa && resp[1] == 0xab;
+}
+
 static void resetGranulesBuffer(struct granules_buffer *gb) {
     gb->numOutgoingGranules = 0;
     gb->totalOutgoingBytes = 0;
@@ -274,7 +323,7 @@ static bool flushGranulesBuffer(struct driver *d) {
         WARN("%s: buffer is full, consider increasing capacity\n", __func__);
     }
 
-    if (!do_transfer_granular(&d->ctx, gb->outgoing, gb->numOutgoingGranules,
+    if (!do_transfer_granular(d->ftHandle, gb->outgoing, gb->numOutgoingGranules,
                 gb->incoming, gb->numIncomingGranules)) {
         return false;
     }
@@ -507,40 +556,29 @@ static bool jtagSplitterCallback(const struct txvc_jtag_split_event *event, void
     TXVC_UNREACHABLE();
 }
 
-
-static const char *ftStatusName(FT_STATUS s) {
-    switch (s) {
-#define CASE(val) case val: return #val
-        CASE(FT_OK);
-        CASE(FT_INVALID_HANDLE);
-        CASE(FT_DEVICE_NOT_FOUND);
-        CASE(FT_DEVICE_NOT_OPENED);
-        CASE(FT_IO_ERROR);
-        CASE(FT_INSUFFICIENT_RESOURCES);
-        CASE(FT_INVALID_PARAMETER);
-        CASE(FT_INVALID_BAUD_RATE);
-        CASE(FT_DEVICE_NOT_OPENED_FOR_ERASE);
-        CASE(FT_DEVICE_NOT_OPENED_FOR_WRITE);
-        CASE(FT_FAILED_TO_WRITE_DEVICE);
-        CASE(FT_EEPROM_READ_FAILED);
-        CASE(FT_EEPROM_WRITE_FAILED);
-        CASE(FT_EEPROM_ERASE_FAILED);
-        CASE(FT_EEPROM_NOT_PRESENT);
-        CASE(FT_EEPROM_NOT_PROGRAMMED);
-        CASE(FT_INVALID_ARGS);
-        CASE(FT_NOT_SUPPORTED);
-        CASE(FT_OTHER_ERROR);
-        CASE(FT_DEVICE_LIST_NOT_READY);
-#undef CASE
-        default:
-            return "???";
-    }
-}
-
 static bool activate(int numArgs, const char **argNames, const char **argValues){
     struct driver *d = &gFtdi;
 
-    if (!load_config(numArgs, argNames, argValues, &d->params)) return false;
+    if (!load_config(numArgs, argNames, argValues, &d->params)) goto bail_noop;
+    char channelSelector = '*';
+    switch (d->params.device) {
+        case FT_DEVICE_2232H:
+            d->chipBufferBytes = 4096;
+            d->highSpeedCapable = true;
+            if (d->params.channel == INTERFACE_A) channelSelector = 'A';
+            else if (d->params.channel == INTERFACE_B) channelSelector = 'B';
+            else ERROR("Bad channel\n");
+            break;
+        case FT_DEVICE_232H:
+            d->chipBufferBytes = 1024;
+            d->highSpeedCapable = true;
+            if (d->params.channel == INTERFACE_A) channelSelector = '*';
+            else ERROR("Bad channel\n");
+            break;
+        default:
+            ERROR("Unknown chip type: %d\n", d->params.device);
+            goto bail_noop;
+    }
 
 #define REQUIRE_D2XX_SUCCESS_(d2xxCallExpr, cleanupLabel)                                          \
     do {                                                                                           \
@@ -558,48 +596,30 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             (d2xxVersion >>  8) & 0xffu,
             (d2xxVersion >>  0) & 0xffu);
 
+    REQUIRE_D2XX_SUCCESS_(FT_SetVIDPID(d->params.vid,d->params.pid), bail_noop);
 
-
-
-    struct ftdi_version_info info = ftdi_get_library_version();
-    INFO("Using libftdi \"%s %s\"\n", info.version_str, info.snapshot_str);
-
-#define REQUIRE_FTDI_SUCCESS_(ftdiCallExpr, cleanupLabel)                                          \
-    do {                                                                                           \
-        int err = (ftdiCallExpr);                                                                  \
-        if (err != 0) {                                                                            \
-            ERROR("Failed: %s: %d %s\n", #ftdiCallExpr, err, ftdi_get_error_string(&gFtdi.ctx));   \
-            goto cleanupLabel;                                                                     \
-        }                                                                                          \
-    } while (0)
-
-    REQUIRE_FTDI_SUCCESS_(ftdi_init(&d->ctx), bail_noop);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_interface(&d->ctx, d->params.channel), bail_deinit);
-    REQUIRE_FTDI_SUCCESS_(
-        ftdi_usb_open(&d->ctx, d->params.vid, d->params.pid), bail_deinit);
-    REQUIRE_FTDI_SUCCESS_(ftdi_usb_purge_buffers(&d->ctx) , bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_event_char(&d->ctx, 0, 0) , bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_error_char(&d->ctx, 0, 0) , bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_latency_timer(&d->ctx, 16), bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_setflowctrl(&d->ctx, SIO_RTS_CTS_HS), bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET), bail_usb_close);
-    REQUIRE_FTDI_SUCCESS_(ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_MPSSE), bail_usb_close);
-
-#undef REQUIRE_FTDI_SUCCESS_
-
-    switch (d->ctx.type) {
-        case TYPE_2232H:
-            d->chipBufferBytes = 4096;
-            d->highSpeedCapable = true;
+    FT_DEVICE_LIST_INFO_NODE deviceInfo[4];
+    DWORD numInfo = 4;
+    REQUIRE_D2XX_SUCCESS_(FT_CreateDeviceInfoList(&numInfo), bail_noop);
+    REQUIRE_D2XX_SUCCESS_(FT_GetDeviceInfoList(deviceInfo, &numInfo), bail_noop);
+    char *serial = NULL;
+    for (DWORD i = 0; i < numInfo; i++) {
+        char *curSerial = deviceInfo[i].SerialNumber;
+        if (channelSelector == '*' || channelSelector == curSerial[strlen(curSerial) - 1]) {
+            serial = curSerial;
             break;
-        case TYPE_232H:
-            d->chipBufferBytes = 1024;
-            d->highSpeedCapable = true;
-            break;
-        default:
-            ERROR("Unknown chip type: %d\n", d->ctx.type);
-            goto bail_reset_mode;
+        }
     }
+    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(serial, FT_OPEN_BY_SERIAL_NUMBER, &d->ftHandle), bail_noop);
+
+    REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
+    REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
+    //REQUIRE_D2XX_SUCCESS_(FT_SetLatencyTimer(d->ftHandle, 16), bail_usb_close);
+    REQUIRE_D2XX_SUCCESS_(FT_SetFlowControl(d->ftHandle, FT_FLOW_RTS_CTS, 0, 0), bail_usb_close);
+    REQUIRE_D2XX_SUCCESS_(FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET), bail_usb_close);
+    REQUIRE_D2XX_SUCCESS_(FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_MPSSE), bail_usb_close);
+
+#undef REQUIRE_D2XX_SUCCESS_
 
     txvc_mempool_init(&d->granulesPool, 64 * 1024);
     resetGranulesBuffer(&d->granulesBuffer);
@@ -629,7 +649,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
                 TXVC_UNREACHABLE();
         }
     }
-    if (!do_transfer(&d->ctx, setupCmds, sizeof(setupCmds), NULL, 0) || !ensure_synced(&d->ctx)) {
+    if (!do_transfer(d->ftHandle, setupCmds, sizeof(setupCmds), NULL, 0) || !ensure_synced(d->ftHandle)) {
         ERROR("Failed to setup device\n");
         goto bail_reset_mode;
     }
@@ -641,11 +661,9 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     return true;
 
 bail_reset_mode:
-    ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET);
+    FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
 bail_usb_close:
-    ftdi_usb_close(&d->ctx);
-bail_deinit:
-    ftdi_deinit(&d->ctx);
+    FT_Close(d->ftHandle);
 bail_noop:
     return false;
 }
@@ -653,9 +671,8 @@ bail_noop:
 static bool deactivate(void){
     struct driver *d = &gFtdi;
     txvc_jtag_splitter_deinit(&d->jtagSplitter);
-    ftdi_set_bitmode(&d->ctx, 0x00, BITMODE_RESET);
-    ftdi_usb_close(&d->ctx);
-    ftdi_deinit(&d->ctx);
+    FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
+    FT_Close(d->ftHandle);
     return true;
 }
 
@@ -690,8 +707,8 @@ static int set_tck_period(int tckPeriodNs){
         WARN("Using maximal available period: %dns\n", actualPeriodNs);
     }
     uint8_t cmd[] = { TCK_DIVISOR, divider & 0xff, (divider >> 8) & 0xff, DIS_DIV_5, };
-    if (!do_transfer(&d->ctx, cmd, d->highSpeedCapable ? 4 : 3, NULL, 0)
-            || !ensure_synced(&d->ctx)) {
+    if (!do_transfer(d->ftHandle, cmd, d->highSpeedCapable ? 4 : 3, NULL, 0)
+            || !ensure_synced(d->ftHandle)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
         actualPeriodNs = -1;
     }
@@ -725,6 +742,8 @@ const struct txvc_driver driver_ftdi_generic = {
         PIN_ROLE_LIST_ITEMS(AS_HELP_STRING)
         "Allowed FTDI channels:\n"
         FTDI_INTERFACE_LIST_ITEMS(AS_HELP_STRING)
+        "Allowed chip types\n"
+        FTDI_SUPPORTED_DEVICES_LIST_ITEMS(AS_HELP_STRING)
 #undef AS_HELP_STRING
         ,
     .activate = activate,

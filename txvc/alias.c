@@ -39,6 +39,7 @@ static const struct {
         {
             .description = "Numato Lab Mimas Artix 7 FPGA Module",
             .profile = "ftdi-generic:"
+                "device=ft2232h,"
                 "vid=2a19,"
                 "pid=1009,"
                 "channel=B,"
@@ -95,6 +96,7 @@ static const struct {
         {
             .description = "FT232H-based USB to JTAG cable",
             .profile = "ftdi-generic:"
+                "device=ft232h,"
                 "vid=0403,"
                 "pid=6014,"
                 "channel=A,"
