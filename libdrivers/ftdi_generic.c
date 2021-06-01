@@ -603,11 +603,13 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             goto bail_noop;
     }
 
+    FT_STATUS lastStatus = FT_OK;
+
 #define REQUIRE_D2XX_SUCCESS_(d2xxCallExpr, cleanupLabel)                                          \
     do {                                                                                           \
-        FT_STATUS status = (d2xxCallExpr);                                                         \
-        if (status != FT_OK) {                                                                     \
-            ERROR("Failed: %s: %s\n", #d2xxCallExpr, ftStatusName(status));                        \
+        lastStatus = (d2xxCallExpr);                                                               \
+        if (lastStatus != FT_OK) {                                                                 \
+            ERROR("Failed: %s: %s\n", #d2xxCallExpr, ftStatusName(lastStatus));                    \
             goto cleanupLabel;                                                                     \
         }                                                                                          \
     } while (0)
@@ -633,7 +635,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             break;
         }
     }
-    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(serial, FT_OPEN_BY_SERIAL_NUMBER, &d->ftHandle), bail_noop);
+    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(serial, FT_OPEN_BY_SERIAL_NUMBER, &d->ftHandle), bail_cant_open);
 
     REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
@@ -688,6 +690,12 @@ bail_reset_mode:
     FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
 bail_usb_close:
     FT_Close(d->ftHandle);
+bail_cant_open:
+    if (lastStatus == FT_DEVICE_NOT_OPENED) {
+        ERROR("--------------------------------------------\n");
+        ERROR(" Did you forgot to \"sudo rmmod ftdi_sio\"?\n");
+        ERROR("--------------------------------------------\n");
+    }
 bail_noop:
     return false;
 }
