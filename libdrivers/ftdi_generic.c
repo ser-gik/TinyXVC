@@ -31,7 +31,6 @@
 #include "txvc/bit_vector.h"
 #include "txvc/mempool.h"
 
-#include <libftdi1/ftdi.h>
 #include <ftd2xx.h>
 
 #include <string.h>
@@ -50,8 +49,8 @@ TXVC_DEFAULT_LOG_TAG(ftdiGeneric);
     X("ft232h", FT_DEVICE_232H, "FT232H chip")                                                     \
 
 #define FTDI_INTERFACE_LIST_ITEMS(X)                                                               \
-    X("A", INTERFACE_A, "FTDI' ADBUS channel")                                                     \
-    X("B", INTERFACE_B, "FTDI' BDBUS channel")                                                     \
+    X("A", 'A', "FTDI' ADBUS channel")                                                             \
+    X("B", 'B', "FTDI' BDBUS channel")                                                             \
 
 #define PIN_ROLE_LIST_ITEMS(X)                                                                     \
     X("driver_low", PIN_ROLE_OTHER_DRIVER_LOW, "permanent low level driver")                       \
@@ -74,9 +73,9 @@ static FT_DEVICE str_to_ft_device(const char *s) {
     return -1;
 }
 
-static enum ftdi_interface str_to_ftdi_interface(const char *s) {
+static char str_to_ftdi_interface(const char *s) {
     FTDI_INTERFACE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
-    return -1;
+    return '?';
 }
 
 static enum pin_role str_to_pin_role(const char *s) {
@@ -96,7 +95,7 @@ struct ft_params {
     FT_DEVICE device;
     int vid;
     int pid;
-    enum ftdi_interface channel;
+    char channel;
     enum pin_role d_pins[8];
 };
 
@@ -104,7 +103,7 @@ struct ft_params {
     X("device", device, str_to_ft_device, > 0, "FTDI chip type")                                   \
     X("vid", vid, str_to_usb_id, > 0, "USB device vendor ID")                                      \
     X("pid", pid, str_to_usb_id, > 0, "USB device product ID")                                     \
-    X("channel", channel, str_to_ftdi_interface, >= 0, "FTDI channel to use")                      \
+    X("channel", channel, str_to_ftdi_interface, != '?', "FTDI channel to use")                    \
     X("d4", d_pins[4], str_to_pin_role, != PIN_ROLE_INVALID, "D4 pin role")                        \
     X("d5", d_pins[5], str_to_pin_role, != PIN_ROLE_INVALID, "D5 pin role")                        \
     X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, "D6 pin role")                        \
@@ -114,7 +113,7 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
                             struct ft_params *out) {
     memset(out, 0, sizeof(*out));
     out->device = -1;
-    out->channel = -1;
+    out->channel = '?';
 
     for (int i = 0; i < numArgs; i++) {
 #define CONVERT_AND_SET_IF_MATCHES(name, configField, converterFunc, validation, descr)            \
@@ -140,6 +139,18 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
 /*
  * Driver implementation.
  */
+static const uint8_t OP_SHIFT_WR_FALLING_FLAG = 1u << 0;
+static const uint8_t OP_SHIFT_BITMODE_FLAG = 1u << 1;
+/* static const uint8_t OP_SHIFT_RD_FALLING_FLAG = 1u << 2; */
+static const uint8_t OP_SHIFT_LSB_FIRST_FLAG = 1u << 3;
+static const uint8_t OP_SHIFT_WR_TDI_FLAG = 1u << 4;
+static const uint8_t OP_SHIFT_RD_TDO_FLAG = 1u << 5;
+static const uint8_t OP_SHIFT_WR_TMS_FLAG = 1u << 6;
+
+static const uint8_t OP_SET_DBUS_LOBYTE = 0x80u;
+static const uint8_t OP_SET_TCK_DIVISOR = 0x86u;
+static const uint8_t OP_DISABLE_CLK_DIVIDE_BY_5 = 0x8au;
+
 struct readonly_granule {
     const uint8_t* data;
     int size;
@@ -257,15 +268,6 @@ static bool do_transfer_granular(FT_HANDLE ft,
                 ERROR("Sent only %u bytes of %d\n", written, g->size);
                 return false;
             }
-        }
-    }
-
-    if (0) {
-        DWORD written;
-        uint8_t sendImmediate = SEND_IMMEDIATE;
-        if (!FT_SUCCESS(FT_Write(ft, &sendImmediate, 1, &written)) || written != 1) {
-            ERROR("Failed to request immediate response\n");
-            return false;
         }
     }
 
@@ -425,7 +427,10 @@ static bool appendTmsShiftToGranulesBuffer(struct driver *d,
          */
         const int maxTmsBitsPerCommand = 6;
         const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
-        cmd[0] = MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+        cmd[0] = OP_SHIFT_WR_TMS_FLAG
+               | OP_SHIFT_LSB_FIRST_FLAG
+               | OP_SHIFT_BITMODE_FLAG
+               | OP_SHIFT_WR_FALLING_FLAG;
         cmd[1] = bitsToTransfer - 1;
         cmd[2] = (!!d->lastTdi) << 7;
         copy_bits(tms, fromBitIdx, &cmd[2], 0, bitsToTransfer, true);
@@ -471,7 +476,11 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
     for (int curIdx = fromBitIdx; curIdx < toBitIdx;) {
         if (curIdx == fromBitIdx && numLeadingBits > 0) {
             uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-            cmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+            cmd[0] = OP_SHIFT_RD_TDO_FLAG
+                   | OP_SHIFT_WR_TDI_FLAG
+                   | OP_SHIFT_LSB_FIRST_FLAG
+                   | OP_SHIFT_BITMODE_FLAG
+                   | OP_SHIFT_WR_FALLING_FLAG;
             cmd[1] = numLeadingBits - 1;
             cmd[2] = tdi[fromBitIdx / 8] >> (fromBitIdx % 8);
             uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
@@ -494,7 +503,10 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
                 ALWAYS_ASSERT(curIdx % 8 == 0);
                 const int innerOctetsToSend = min((innerEndIdx - curIdx) / 8, maxGranuleSize(d));
                 uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-                cmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_WRITE_NEG;
+                cmd[0] = OP_SHIFT_RD_TDO_FLAG
+                       | OP_SHIFT_WR_TDI_FLAG
+                       | OP_SHIFT_LSB_FIRST_FLAG
+                       | OP_SHIFT_WR_FALLING_FLAG;
                 cmd[1] = ((innerOctetsToSend - 1) >> 0) & 0xff;
                 cmd[2] = ((innerOctetsToSend - 1) >> 8) & 0xff;
                 if (!appendToGranuleBuffer(d, cmd, 3, NULL, 0, NULL)) {
@@ -508,7 +520,11 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
             }
             if (curIdx == innerEndIdx && numTrailingBits > 0) {
                 uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-                cmd[0] = MPSSE_DO_READ | MPSSE_DO_WRITE | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+                cmd[0] = OP_SHIFT_RD_TDO_FLAG
+                       | OP_SHIFT_WR_TDI_FLAG
+                       | OP_SHIFT_LSB_FIRST_FLAG
+                       | OP_SHIFT_BITMODE_FLAG
+                       | OP_SHIFT_WR_FALLING_FLAG;
                 cmd[1] = numTrailingBits - 1;
                 cmd[2] = tdi[innerEndIdx / 8];
                 uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
@@ -530,7 +546,11 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
             const int lastTdiBit = !!get_bit(tdi, lastBitIdx);
             const int lastTmsBit = !!lastTmsBitHigh;
             uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-            cmd[0] = MPSSE_WRITE_TMS | MPSSE_DO_READ | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+            cmd[0] = OP_SHIFT_WR_TMS_FLAG
+                   | OP_SHIFT_RD_TDO_FLAG
+                   | OP_SHIFT_LSB_FIRST_FLAG
+                   | OP_SHIFT_BITMODE_FLAG
+                   | OP_SHIFT_WR_FALLING_FLAG;
             cmd[1] = 0x00; /* Send 1 bit */
             cmd[2] = (lastTdiBit << 7) | (lastTmsBit << 1) | lastTmsBit;
             uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
@@ -583,20 +603,24 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     struct driver *d = &gFtdi;
 
     if (!load_config(numArgs, argNames, argValues, &d->params)) goto bail_noop;
-    char channelSelector = '*';
+    char channelSelector = d->params.channel;
     switch (d->params.device) {
         case FT_DEVICE_2232H:
             d->chipBufferBytes = 4096;
             d->highSpeedCapable = true;
-            if (d->params.channel == INTERFACE_A) channelSelector = 'A';
-            else if (d->params.channel == INTERFACE_B) channelSelector = 'B';
-            else ERROR("Bad channel\n");
+            if (channelSelector != 'A' && channelSelector != 'B') {
+                ERROR("Bad channel\n");
+                goto bail_noop;
+            }
             break;
         case FT_DEVICE_232H:
             d->chipBufferBytes = 1024;
             d->highSpeedCapable = true;
-            if (d->params.channel == INTERFACE_A) channelSelector = '*';
-            else ERROR("Bad channel\n");
+            if (channelSelector != 'A') {
+                ERROR("Bad channel\n");
+                goto bail_noop;
+            }
+            channelSelector = 0; /* Single-port device has no channel name in their identifiers */
             break;
         default:
             ERROR("Unknown chip type: %d\n", d->params.device);
@@ -614,32 +638,32 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
         }                                                                                          \
     } while (0)
 
-    DWORD d2xxVersion;
-    REQUIRE_D2XX_SUCCESS_(FT_GetLibraryVersion(&d2xxVersion), bail_noop);
-    INFO("Using d2xx v.%u.%u.%u\n",
-            (d2xxVersion >> 16) & 0xffu,
-            (d2xxVersion >>  8) & 0xffu,
-            (d2xxVersion >>  0) & 0xffu);
+    DWORD ver;
+    REQUIRE_D2XX_SUCCESS_(FT_GetLibraryVersion(&ver), bail_noop);
+    INFO("Using d2xx v.%x.%x.%x\n", (ver >> 16) & 0xffu, (ver >> 8) & 0xffu, (ver >> 0) & 0xffu);
 
     REQUIRE_D2XX_SUCCESS_(FT_SetVIDPID(d->params.vid,d->params.pid), bail_noop);
-
-    FT_DEVICE_LIST_INFO_NODE deviceInfo[4];
-    DWORD numInfo = 4;
-    REQUIRE_D2XX_SUCCESS_(FT_CreateDeviceInfoList(&numInfo), bail_noop);
-    REQUIRE_D2XX_SUCCESS_(FT_GetDeviceInfoList(deviceInfo, &numInfo), bail_noop);
-    char *serial = NULL;
-    for (DWORD i = 0; i < numInfo; i++) {
-        char *curSerial = deviceInfo[i].SerialNumber;
-        if (channelSelector == '*' || channelSelector == curSerial[strlen(curSerial) - 1]) {
-            serial = curSerial;
-            break;
+    FT_DEVICE_LIST_INFO_NODE connectedDevices[4];
+    DWORD numConnectedDevices = sizeof(connectedDevices) / sizeof(connectedDevices[0]);
+    REQUIRE_D2XX_SUCCESS_(FT_CreateDeviceInfoList(&numConnectedDevices), bail_noop);
+    REQUIRE_D2XX_SUCCESS_(FT_GetDeviceInfoList(connectedDevices, &numConnectedDevices), bail_noop);
+    char *serialNumber = NULL;
+    if (!channelSelector) {
+        serialNumber = connectedDevices[0].SerialNumber;
+    } else {
+        for (DWORD i = 0; i < numConnectedDevices; i++) {
+            char *curSerial = connectedDevices[i].SerialNumber;
+            size_t curSerialLen = strlen(curSerial);
+            if (channelSelector == curSerial[curSerialLen - 1]) {
+                serialNumber = curSerial;
+                break;
+            }
         }
     }
-    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(serial, FT_OPEN_BY_SERIAL_NUMBER, &d->ftHandle), bail_cant_open);
+    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(serialNumber, FT_OPEN_BY_SERIAL_NUMBER, &d->ftHandle), bail_cant_open);
 
     REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
-    //REQUIRE_D2XX_SUCCESS_(FT_SetLatencyTimer(d->ftHandle, 16), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetFlowControl(d->ftHandle, FT_FLOW_RTS_CTS, 0, 0), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_MPSSE), bail_usb_close);
@@ -651,10 +675,10 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     resetGranulesBuffer(&d->granulesBuffer);
 
     uint8_t setupCmds[] = {
-        SET_BITS_LOW,
+        OP_SET_DBUS_LOBYTE,
         0x08, /* Initial levels: TCK=0, TDI=0, TMS=1 */
         0x0b, /* Directions: TCK=out, TDI=out, TDO=in, TMS=out */
-        TCK_DIVISOR,
+        OP_SET_TCK_DIVISOR,
         0x05, /* Initialize to 1 MHz clock */
         0x00,
     };
@@ -740,7 +764,12 @@ static int set_tck_period(int tckPeriodNs){
     if (divider == 0xffff) {
         WARN("Using maximal available period: %dns\n", actualPeriodNs);
     }
-    uint8_t cmd[] = { TCK_DIVISOR, divider & 0xff, (divider >> 8) & 0xff, DIS_DIV_5, };
+    const uint8_t cmd[] = {
+        OP_SET_TCK_DIVISOR,
+        divider & 0xff,
+        (divider >> 8) & 0xff,
+        OP_DISABLE_CLK_DIVIDE_BY_5,
+    };
     if (!do_transfer(d->ftHandle, cmd, d->highSpeedCapable ? 4 : 3, NULL, 0)
             || !ensure_synced(d->ftHandle)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
