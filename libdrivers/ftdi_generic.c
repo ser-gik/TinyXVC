@@ -161,7 +161,7 @@ struct bitcopy_params {
 #define GRANULES_BUFFER_CAPACITY 1000
 
 struct granules_buffer {
-    struct readonly_granule outgoing[GRANULES_BUFFER_CAPACITY + 1];
+    struct readonly_granule outgoing[GRANULES_BUFFER_CAPACITY];
     int numOutgoingGranules;
     int totalOutgoingBytes;
     struct granule incoming[GRANULES_BUFFER_CAPACITY];
@@ -169,6 +169,8 @@ struct granules_buffer {
     int totalIncomingBytes;
     struct bitcopy_params postTransferCopy[GRANULES_BUFFER_CAPACITY];
     int numPostTransferCopies;
+
+    bool lastOutgoingIsOpen;
 };
 
 struct driver {
@@ -178,6 +180,7 @@ struct driver {
     FT_HANDLE ftHandle;
     struct txvc_jtag_splitter jtagSplitter;
     struct txvc_mempool granulesPool;
+    struct txvc_spanpool compactionPool;
     struct granules_buffer granulesBuffer;
     unsigned lastTdi : 1;
 };
@@ -305,6 +308,7 @@ static void resetGranulesBuffer(struct granules_buffer *gb) {
     gb->numIncomingGranules = 0;
     gb->totalIncomingBytes = 0;
     gb->numPostTransferCopies = 0;
+    gb->lastOutgoingIsOpen = false;
 }
 
 static int maxGranuleSize(const struct driver *d) {
@@ -323,6 +327,10 @@ static bool flushGranulesBuffer(struct driver *d) {
         WARN("%s: buffer is full, consider increasing capacity\n", __func__);
     }
 
+    if (gb->lastOutgoingIsOpen) {
+        txvc_spanpool_close_span(&d->compactionPool);
+        gb->lastOutgoingIsOpen = false;
+    }
     if (!do_transfer_granular(d->ftHandle, gb->outgoing, gb->numOutgoingGranules,
                 gb->incoming, gb->numIncomingGranules)) {
         return false;
@@ -364,10 +372,30 @@ static bool appendToGranuleBuffer(struct driver *d,
     }
 
     if (outgoingBytes > 0) {
-        gb->outgoing[gb->numOutgoingGranules].data = outgoing;
-        gb->outgoing[gb->numOutgoingGranules].size = outgoingBytes;
-        gb->totalOutgoingBytes += outgoingBytes;
-        gb->numOutgoingGranules++;
+        if (outgoingBytes < 512) {
+            /* Append to the last granule or insert new open granule */
+            if (!gb->lastOutgoingIsOpen) {
+                gb->outgoing[gb->numOutgoingGranules].data =
+                    txvc_spanpool_open_span_unaligned(&d->compactionPool);
+                gb->outgoing[gb->numOutgoingGranules].size = 0;
+                gb->numOutgoingGranules++;
+                gb->lastOutgoingIsOpen = true;
+            }
+            uint8_t *deltaBuffer = txvc_spanpool_span_enlarge(&d->compactionPool, outgoingBytes);
+            memcpy(deltaBuffer, outgoing, outgoingBytes);
+            gb->outgoing[gb->numOutgoingGranules - 1].size += outgoingBytes;
+            gb->totalOutgoingBytes += outgoingBytes;
+        } else {
+            /* Append separate granule */
+            if (gb->lastOutgoingIsOpen) {
+                txvc_spanpool_close_span(&d->compactionPool);
+                gb->lastOutgoingIsOpen = false;
+            }
+            gb->outgoing[gb->numOutgoingGranules].data = outgoing;
+            gb->outgoing[gb->numOutgoingGranules].size = outgoingBytes;
+            gb->totalOutgoingBytes += outgoingBytes;
+            gb->numOutgoingGranules++;
+        }
     }
     if (incomingBytes > 0) {
         gb->incoming[gb->numIncomingGranules].data = incoming;
@@ -389,26 +417,20 @@ static bool appendTmsShiftToGranulesBuffer(struct driver *d,
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
     while (fromBitIdx < toBitIdx) {
-        const int maxTmsCommandsPerGranule = maxGranuleSize(d) / 3;
-        const int tmsCommandsNeeded = (toBitIdx - fromBitIdx) / 6 + !!((toBitIdx - fromBitIdx) % 6);
-        const int numTmsCommands = min(maxTmsCommandsPerGranule, tmsCommandsNeeded);
-
-        uint8_t *cmds = txvc_mempool_alloc_unaligned(&d->granulesPool, 3 * numTmsCommands);
-        for (int i = 0; i < numTmsCommands; i++) {
-            /*
-             * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
-             * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
-             * after command is completed.
-             */
-            const int maxTmsBitsPerCommand = 6;
-            const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
-            cmds[i * 3 + 0] = MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
-            cmds[i * 3 + 1] = bitsToTransfer - 1;
-            cmds[i * 3 + 2] = (!!d->lastTdi) << 7;
-            copy_bits(tms, fromBitIdx, &cmds[i * 3 + 2], 0, bitsToTransfer, true);
-            fromBitIdx += bitsToTransfer;
-        }
-        if (!appendToGranuleBuffer(d, cmds, 3 * numTmsCommands, NULL, 0, NULL)) {
+        uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
+        /*
+         * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
+         * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
+         * after command is completed.
+         */
+        const int maxTmsBitsPerCommand = 6;
+        const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
+        cmd[0] = MPSSE_WRITE_TMS | MPSSE_LSB | MPSSE_BITMODE | MPSSE_WRITE_NEG;
+        cmd[1] = bitsToTransfer - 1;
+        cmd[2] = (!!d->lastTdi) << 7;
+        copy_bits(tms, fromBitIdx, &cmd[2], 0, bitsToTransfer, true);
+        fromBitIdx += bitsToTransfer;
+        if (!appendToGranuleBuffer(d, cmd, 3, NULL, 0, NULL)) {
             return false;
         }
     }
@@ -549,6 +571,7 @@ static bool jtagSplitterCallback(const struct txvc_jtag_split_event *event, void
         const struct txvc_jtag_split_flush_all *e = txvc_jtag_split_cast_to_flush_all(event);
         if (e) {
             bool res = flushGranulesBuffer(d);
+            txvc_spanpool_reclaim_all(&d->compactionPool);
             txvc_mempool_reclaim_all(&d->granulesPool);
             return res;
         }
@@ -622,6 +645,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
 #undef REQUIRE_D2XX_SUCCESS_
 
     txvc_mempool_init(&d->granulesPool, 64 * 1024);
+    txvc_spanpool_init(&d->compactionPool, 64 * 1024);
     resetGranulesBuffer(&d->granulesBuffer);
 
     uint8_t setupCmds[] = {
@@ -671,6 +695,8 @@ bail_noop:
 static bool deactivate(void){
     struct driver *d = &gFtdi;
     txvc_jtag_splitter_deinit(&d->jtagSplitter);
+    txvc_spanpool_deinit(&d->compactionPool);
+    txvc_mempool_deinit(&d->granulesPool);
     FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
     FT_Close(d->ftHandle);
     return true;

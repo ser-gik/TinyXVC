@@ -13,6 +13,7 @@ find_package(LibFTDI1 NO_MODULE REQUIRED)
 include(${LIBFTDI_USE_FILE})
 
 set(TXVC_C_FLAGS
+    -g
     $<$<BOOL:${TXVC_ENABLE_GPROF}>:-pg>
     -Wall
     -Wextra

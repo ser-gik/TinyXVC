@@ -49,3 +49,22 @@ extern void txvc_mempool_deinit(struct txvc_mempool *mempool);
 extern unsigned char *txvc_mempool_alloc_unaligned(struct txvc_mempool *mempool, size_t sz);
 extern void txvc_mempool_reclaim_all(struct txvc_mempool *mempool);
 
+
+struct txvc_spanpool {
+    unsigned char *start;
+    unsigned char *end;
+    unsigned char *head;
+    unsigned spanOpen : 1;
+    unsigned fatalOom : 1;
+    void (*release)(unsigned char *start, unsigned char *end);
+};
+
+extern void txvc_spanpool_init(struct txvc_spanpool *spanpool, size_t sz);
+extern void txvc_spanpool_deinit(struct txvc_spanpool *spanpool);
+
+extern unsigned char *txvc_spanpool_open_span_unaligned(struct txvc_spanpool *spanpool);
+extern unsigned char *txvc_spanpool_span_enlarge(struct txvc_spanpool *spanpool, size_t delta);
+extern void txvc_spanpool_close_span(struct txvc_spanpool *spanpool);
+
+extern void txvc_spanpool_reclaim_all(struct txvc_spanpool *spanpool);
+
