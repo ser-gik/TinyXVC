@@ -4,6 +4,7 @@ add_txvc_executable(TxvcExe
     SRCS
         txvc.c
         alias.c
+        driver_wrapper.c
     DEPENDS
         Txvc
         Drivers

@@ -25,6 +25,7 @@
  */
 
 #include "alias.h"
+#include "driver_wrapper.h"
 #include "txvc/driver.h"
 #include "txvc/log.h"
 #include "txvc/server.h"
@@ -76,6 +77,7 @@ struct cli_options {
 };
 
 static volatile sig_atomic_t shouldTerminate = 0;
+const char *txvcProgname;
 
 static void sigint_handler(int signo) {
     TXVC_UNUSED(signo);
@@ -86,8 +88,8 @@ static void sigint_handler(int signo) {
 
 static void listen_for_user_interrupt(void) {
     /*
-     * Received SIGINT must NOT restart interrupted syscalls, so that server code will be able
-     * to test termination flag in a timely manner.
+     * Received SIGINT must NOT restart interrupted syscalls, so that blocking I/O calls will
+     * return immediately to let test termination flag in a timely manner.
      * Don't use signal() as it may force restarts.
      */
     struct sigaction sa;
@@ -185,12 +187,8 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
     return strcmp(name, d->name) != 0;
 }
 
-static int noop_set_tck_period(int tckPeriodNs) {
-    WARN("Ignoring new TCK period %dns\n", tckPeriodNs);
-    return tckPeriodNs;
-}
-
 int main(int argc, char**argv) {
+    txvcProgname = argv[0];
     listen_for_user_interrupt();
 
     struct cli_options opts = { 0 };
@@ -212,7 +210,7 @@ int main(int argc, char**argv) {
         const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
         if (alias) {
             INFO("Found alias %s (%s),\n", opts.profile, alias->description);
-            INFO("using profile %s\n", alias->profile);
+            INFO("Using profile %s\n", alias->profile);
             opts.profile = alias->profile;
         }
     }
@@ -229,30 +227,22 @@ int main(int argc, char**argv) {
         return EXIT_FAILURE;
     }
 
-    struct txvc_driver driverWrapper;
-    {
-        const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, profile.driverName);
-        if (!driver) {
-            ERROR("Can not find driver \"%s\"\n", profile.driverName);
-            return EXIT_FAILURE;
-        }
-        driverWrapper = *driver;
+    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, profile.driverName);
+    if (!driver) {
+        ERROR("Can not find driver \"%s\"\n", profile.driverName);
+        return EXIT_FAILURE;
     }
 
-    if (!driverWrapper.activate(profile.numArg, profile.argKeys, profile.argValues)) {
+    if (!driver->activate(profile.numArg, profile.argKeys, profile.argValues)) {
         ERROR("Failed to activate driver \"%s\"\n", profile.driverName);
         return EXIT_FAILURE;
     }
 
-    if (opts.tckPeriodNanos > 0) {
-        if (driverWrapper.set_tck_period(opts.tckPeriodNanos) != opts.tckPeriodNanos) {
-            WARN("Can't set TCK period to %dns\n", opts.tckPeriodNanos);
-        }
-        driverWrapper.set_tck_period = noop_set_tck_period;
-    }
+    txvc_driver_wrapper_setup(driver, opts.tckPeriodNanos);
+    driver = &txvcDriverWrapper;
 
-    txvc_run_server(opts.serverAddr, &driverWrapper, &shouldTerminate);
-    driverWrapper.deactivate();
+    txvc_run_server(opts.serverAddr, driver, &shouldTerminate);
+    driver->deactivate();
     return EXIT_SUCCESS;
 }
 
