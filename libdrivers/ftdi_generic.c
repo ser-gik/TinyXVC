@@ -717,7 +717,7 @@ bail_usb_close:
 bail_cant_open:
     if (lastStatus == FT_DEVICE_NOT_OPENED) {
         ERROR("--------------------------------------------\n");
-        ERROR(" Did you forgot to \"sudo rmmod ftdi_sio\"?\n");
+        ERROR(" Did you forget to \"sudo rmmod ftdi_sio\"?\n");
         ERROR("--------------------------------------------\n");
     }
 bail_noop:
