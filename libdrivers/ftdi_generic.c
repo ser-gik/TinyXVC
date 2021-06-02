@@ -678,9 +678,6 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
         OP_SET_DBUS_LOBYTE,
         0x08, /* Initial levels: TCK=0, TDI=0, TMS=1 */
         0x0b, /* Directions: TCK=out, TDI=out, TDO=in, TMS=out */
-        OP_SET_TCK_DIVISOR,
-        0x05, /* Initialize to 1 MHz clock */
-        0x00,
     };
     /* Append user choices for D4-D7 */
     for (int i = 4; i < 8; i++) {
