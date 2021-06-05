@@ -60,7 +60,7 @@ static bool onetime_shift_bits(int numBits,
         extern const char *txvcProgname;
         WARN("Client did not set TCK period before shifting data\n");
         WARN("Using default value: %dns\n", DEFAULT_TCK_PERIOD);
-        WARN("See \"%s --help\" to enforce other TCK period\n", txvcProgname);
+        WARN("See \"%s -h\" to enforce other TCK period\n", txvcProgname);
         onetime_set_tck_period(DEFAULT_TCK_PERIOD);
     }
     txvcDriverWrapper.shift_bits = orig_shift_bits;

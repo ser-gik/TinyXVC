@@ -31,6 +31,7 @@
 #include "txvc/bit_vector.h"
 #include "txvc/mempool.h"
 
+#include <WinTypes.h>
 #include <ftd2xx.h>
 
 #include <string.h>
@@ -48,7 +49,7 @@ TXVC_DEFAULT_LOG_TAG(ftdiGeneric);
     X("ft2232h", FT_DEVICE_2232H, "FT2232H chip")                                                  \
     X("ft232h", FT_DEVICE_232H, "FT232H chip")                                                     \
 
-#define FTDI_INTERFACE_LIST_ITEMS(X)                                                               \
+#define FTDI_CHANNEL_LIST_ITEMS(X)                                                               \
     X("A", 'A', "FTDI' ADBUS channel")                                                             \
     X("B", 'B', "FTDI' BDBUS channel")                                                             \
 
@@ -74,7 +75,7 @@ static FT_DEVICE str_to_ft_device(const char *s) {
 }
 
 static char str_to_ftdi_interface(const char *s) {
-    FTDI_INTERFACE_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
+    FTDI_CHANNEL_LIST_ITEMS(RETURN_ENUM_IF_NAME_MATCHES)
     return '?';
 }
 
@@ -139,6 +140,9 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
 /*
  * Driver implementation.
  */
+
+/* FTDI MPSSE opcodes */
+static const uint8_t OP_BAD_COMMANDS = 0xfau;
 static const uint8_t OP_SHIFT_WR_FALLING_FLAG = 1u << 0;
 static const uint8_t OP_SHIFT_BITMODE_FLAG = 1u << 1;
 /* static const uint8_t OP_SHIFT_RD_FALLING_FLAG = 1u << 2; */
@@ -174,15 +178,24 @@ struct bitcopy_params {
 struct granules_buffer {
     struct readonly_granule outgoing[GRANULES_BUFFER_CAPACITY];
     int numOutgoingGranules;
-    int totalOutgoingBytes;
+    int numOutgoingBytes;
     struct granule incoming[GRANULES_BUFFER_CAPACITY];
     int numIncomingGranules;
-    int totalIncomingBytes;
+    int numIncomingBytes;
     struct bitcopy_params postTransferCopy[GRANULES_BUFFER_CAPACITY];
     int numPostTransferCopies;
 
     bool lastOutgoingIsOpen;
 };
+
+
+
+
+
+
+
+
+
 
 struct driver {
     struct ft_params params;
@@ -223,7 +236,7 @@ static void copy_bits(const uint8_t* src, int fromIdx,
     }
 }
 
-static const char *ftStatusName(FT_STATUS s) {
+static const char *ft_status_name(FT_STATUS s) {
     switch (s) {
 #define CASE(val) case val: return #val
         CASE(FT_OK);
@@ -252,7 +265,7 @@ static const char *ftStatusName(FT_STATUS s) {
     }
 }
 
-static bool do_transfer_granular(FT_HANDLE ft,
+static bool do_transfer(FT_HANDLE ft,
         const struct readonly_granule* outgoingGranules, int numOutgoingGranules,
         const struct granule* incomingGranules, int numIncomingGranules) {
     for (int i = 0; i < numOutgoingGranules; i++) {
@@ -261,7 +274,7 @@ static bool do_transfer_granular(FT_HANDLE ft,
             DWORD written;
             FT_STATUS status = FT_Write(ft, (LPVOID *) g->data, g->size, &written);
             if (!FT_SUCCESS(status)) {
-                ERROR("Failed to send data: %s\n", ftStatusName(status));
+                ERROR("Failed to send data: %s\n", ft_status_name(status));
                 return false;
             }
             if (written != (DWORD) g->size) {
@@ -277,7 +290,7 @@ static bool do_transfer_granular(FT_HANDLE ft,
             DWORD read;
             FT_STATUS status = FT_Read(ft, g->data, g->size, &read);
             if (!FT_SUCCESS(status)) {
-                ERROR("Failed to receive data: %s\n", ftStatusName(status));
+                ERROR("Failed to receive data: %s\n", ft_status_name(status));
                 return false;
             }
             if (read != (DWORD) g->size) {
@@ -289,40 +302,36 @@ static bool do_transfer_granular(FT_HANDLE ft,
     return true;
 }
 
-static bool do_transfer(FT_HANDLE ft,
-        const uint8_t* outgoing, int outgoingSz,
-        uint8_t* incoming, int incomingSz) {
-    const struct readonly_granule out = { .data = outgoing, .size = outgoingSz, };
-    const struct granule in = { .data = incoming, .size = incomingSz, };
-    return do_transfer_granular(ft, &out, 1, &in, 1);
-}
-
-static bool ensure_synced(FT_HANDLE ft) {
+static bool check_device_in_sync(FT_HANDLE ft) {
     /* Send bad opcode and check that chip responds with "BadCommand" */
-    unsigned char resp[2];
-    return do_transfer(ft, (unsigned char[]){ 0xab, }, 1, resp, sizeof(resp))
-        && resp[0] == 0xfa && resp[1] == 0xab;
+    const uint8_t cmd[1] = { 0xab, };
+    struct readonly_granule out = { .data = cmd, .size = sizeof(cmd), };
+    uint8_t resp[2];
+    struct granule in = { .data = resp, .size = sizeof(resp), };
+    return do_transfer(ft, &out, 1, &in, 1)
+        && resp[0] == OP_BAD_COMMANDS
+        && resp[1] == cmd[0];
 }
 
-static void resetGranulesBuffer(struct granules_buffer *gb) {
+static void reset_granules_buffer(struct granules_buffer *gb) {
     gb->numOutgoingGranules = 0;
-    gb->totalOutgoingBytes = 0;
+    gb->numOutgoingBytes = 0;
     gb->numIncomingGranules = 0;
-    gb->totalIncomingBytes = 0;
+    gb->numIncomingBytes = 0;
     gb->numPostTransferCopies = 0;
     gb->lastOutgoingIsOpen = false;
 }
 
-static int maxGranuleSize(const struct driver *d) {
+static int max_granule_size(const struct driver *d) {
     return d->chipBufferBytes;
 }
 
-static bool flushGranulesBuffer(struct driver *d) {
+static bool flush_granules_buffer(struct driver *d) {
     struct granules_buffer *gb = &d->granulesBuffer;
     VERBOSE("Flushing granules: %d outgoing (%d bytes), %d incoming (%d bytes)"
             ", %d post-transfer copy tasks\n",
-            gb->numOutgoingGranules, gb->totalOutgoingBytes,
-            gb->numIncomingGranules, gb->totalIncomingBytes,
+            gb->numOutgoingGranules, gb->numOutgoingBytes,
+            gb->numIncomingGranules, gb->numIncomingBytes,
             gb->numPostTransferCopies);
     if (gb->numIncomingGranules >= GRANULES_BUFFER_CAPACITY
             || gb->numOutgoingGranules >= GRANULES_BUFFER_CAPACITY) {
@@ -333,7 +342,7 @@ static bool flushGranulesBuffer(struct driver *d) {
         txvc_spanpool_close_span(&d->compactionPool);
         gb->lastOutgoingIsOpen = false;
     }
-    if (!do_transfer_granular(d->ftHandle, gb->outgoing, gb->numOutgoingGranules,
+    if (!do_transfer(d->ftHandle, gb->outgoing, gb->numOutgoingGranules,
                 gb->incoming, gb->numIncomingGranules)) {
         return false;
     }
@@ -342,34 +351,34 @@ static bool flushGranulesBuffer(struct driver *d) {
         const struct bitcopy_params *bp = &gb->postTransferCopy[i];
         copy_bits(bp->src, bp->fromBit, bp->dst, bp->toBit, bp->numBits, false);
     }
-    resetGranulesBuffer(gb);
+    reset_granules_buffer(gb);
     return true;
 }
 
-static bool appendToGranuleBuffer(struct driver *d,
+static bool append_to_granule_buffer(struct driver *d,
         const uint8_t *outgoing, int outgoingBytes,
         uint8_t *incoming, int incomingBytes,
         const struct bitcopy_params *postTransferCopy) {
-    ALWAYS_ASSERT(outgoingBytes <= maxGranuleSize(d));
-    ALWAYS_ASSERT(incomingBytes <= maxGranuleSize(d));
+    ALWAYS_ASSERT(outgoingBytes <= max_granule_size(d));
+    ALWAYS_ASSERT(incomingBytes <= max_granule_size(d));
 
     VERBOSE("Appening granule: %d outgoing bytes, %d incoming bytes, %s post-transfer copy task\n",
             outgoingBytes, incomingBytes, postTransferCopy ? "with" : "no");
     struct granules_buffer *gb = &d->granulesBuffer;
     bool flush = false;
     if (outgoingBytes > 0 && (gb->numOutgoingGranules >= GRANULES_BUFFER_CAPACITY
-                                || gb->totalOutgoingBytes + outgoingBytes > d->chipBufferBytes)) {
+                                || gb->numOutgoingBytes + outgoingBytes > d->chipBufferBytes)) {
         flush = true;
     }
     if (incomingBytes > 0 && (gb->numIncomingGranules >= GRANULES_BUFFER_CAPACITY
-                                || gb->totalIncomingBytes + incomingBytes > d->chipBufferBytes)) {
+                                || gb->numIncomingBytes + incomingBytes > d->chipBufferBytes)) {
         flush = true;
     }
     if (postTransferCopy && gb->numPostTransferCopies >= GRANULES_BUFFER_CAPACITY) {
         flush = true;
     }
 
-    if (flush && !flushGranulesBuffer(d)) {
+    if (flush && !flush_granules_buffer(d)) {
         return false;
     }
 
@@ -386,7 +395,7 @@ static bool appendToGranuleBuffer(struct driver *d,
             uint8_t *deltaBuffer = txvc_spanpool_span_enlarge(&d->compactionPool, outgoingBytes);
             memcpy(deltaBuffer, outgoing, outgoingBytes);
             gb->outgoing[gb->numOutgoingGranules - 1].size += outgoingBytes;
-            gb->totalOutgoingBytes += outgoingBytes;
+            gb->numOutgoingBytes += outgoingBytes;
         } else {
             /* Append separate granule */
             if (gb->lastOutgoingIsOpen) {
@@ -395,14 +404,14 @@ static bool appendToGranuleBuffer(struct driver *d,
             }
             gb->outgoing[gb->numOutgoingGranules].data = outgoing;
             gb->outgoing[gb->numOutgoingGranules].size = outgoingBytes;
-            gb->totalOutgoingBytes += outgoingBytes;
+            gb->numOutgoingBytes += outgoingBytes;
             gb->numOutgoingGranules++;
         }
     }
     if (incomingBytes > 0) {
         gb->incoming[gb->numIncomingGranules].data = incoming;
         gb->incoming[gb->numIncomingGranules].size = incomingBytes;
-        gb->totalIncomingBytes += incomingBytes;
+        gb->numIncomingBytes += incomingBytes;
         gb->numIncomingGranules++;
     }
     if (postTransferCopy) {
@@ -412,7 +421,7 @@ static bool appendToGranuleBuffer(struct driver *d,
     return true;
 }
 
-static bool appendTmsShiftToGranulesBuffer(struct driver *d,
+static bool append_tms_shift_to_granules_buffer(struct driver *d,
         const uint8_t* tms, int fromBitIdx, int toBitIdx) {
     ALWAYS_ASSERT(fromBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx >= 0);
@@ -435,14 +444,14 @@ static bool appendTmsShiftToGranulesBuffer(struct driver *d,
         cmd[2] = (!!d->lastTdi) << 7;
         copy_bits(tms, fromBitIdx, &cmd[2], 0, bitsToTransfer, true);
         fromBitIdx += bitsToTransfer;
-        if (!appendToGranuleBuffer(d, cmd, 3, NULL, 0, NULL)) {
+        if (!append_to_granule_buffer(d, cmd, 3, NULL, 0, NULL)) {
             return false;
         }
     }
     return true;
 }
 
-static bool appendTdiShiftToGranulesBuffer(struct driver *d,
+static bool append_tdi_shift_to_granules_buffer(struct driver *d,
         const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx, bool lastTmsBitHigh) {
     ALWAYS_ASSERT(fromBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx >= 0);
@@ -491,7 +500,7 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
                 .toBit = fromBitIdx,
                 .numBits = numLeadingBits,
             };
-            if (!appendToGranuleBuffer(d, cmd, 3, received, 1, &postCopy)) {
+            if (!append_to_granule_buffer(d, cmd, 3, received, 1, &postCopy)) {
                 return false;
             }
             curIdx += numLeadingBits;
@@ -501,7 +510,7 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
                 ALWAYS_ASSERT(innerBeginIdx % 8 == 0);
                 ALWAYS_ASSERT(innerEndIdx % 8 == 0);
                 ALWAYS_ASSERT(curIdx % 8 == 0);
-                const int innerOctetsToSend = min((innerEndIdx - curIdx) / 8, maxGranuleSize(d));
+                const int innerOctetsToSend = min((innerEndIdx - curIdx) / 8, max_granule_size(d));
                 uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
                 cmd[0] = OP_SHIFT_RD_TDO_FLAG
                        | OP_SHIFT_WR_TDI_FLAG
@@ -509,10 +518,10 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
                        | OP_SHIFT_WR_FALLING_FLAG;
                 cmd[1] = ((innerOctetsToSend - 1) >> 0) & 0xff;
                 cmd[2] = ((innerOctetsToSend - 1) >> 8) & 0xff;
-                if (!appendToGranuleBuffer(d, cmd, 3, NULL, 0, NULL)) {
+                if (!append_to_granule_buffer(d, cmd, 3, NULL, 0, NULL)) {
                     return false;
                 }
-                if (!appendToGranuleBuffer(d, tdi + curIdx / 8, innerOctetsToSend,
+                if (!append_to_granule_buffer(d, tdi + curIdx / 8, innerOctetsToSend,
                                               tdo + curIdx / 8, innerOctetsToSend, NULL)) {
                     return false;
                 }
@@ -535,7 +544,7 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
                     .toBit = innerEndIdx,
                     .numBits = numTrailingBits,
                 };
-                if (!appendToGranuleBuffer(d, cmd, 3, received, 1, &postCopy)) {
+                if (!append_to_granule_buffer(d, cmd, 3, received, 1, &postCopy)) {
                     return false;
                 }
                 curIdx += numTrailingBits;
@@ -561,7 +570,7 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
                 .toBit = lastBitIdx,
                 .numBits = 1,
             };
-            if (!appendToGranuleBuffer(d, cmd, 3, received, 1, &postCopy)) {
+            if (!append_to_granule_buffer(d, cmd, 3, received, 1, &postCopy)) {
                 return false;
             }
 
@@ -573,24 +582,24 @@ static bool appendTdiShiftToGranulesBuffer(struct driver *d,
     return true;
 }
 
-static bool jtagSplitterCallback(const struct txvc_jtag_split_event *event, void *extra) {
+static bool jtag_splitter_callback(const struct txvc_jtag_split_event *event, void *extra) {
     struct driver *d = extra;
     {
         const struct txvc_jtag_split_shift_tms *e = txvc_jtag_split_cast_to_shift_tms(event);
         if (e) {
-            return appendTmsShiftToGranulesBuffer(d, e->tms, e->fromBitIdx, e->toBitIdx);
+            return append_tms_shift_to_granules_buffer(d, e->tms, e->fromBitIdx, e->toBitIdx);
         }
     }
     {
         const struct txvc_jtag_split_shift_tdi *e = txvc_jtag_split_cast_to_shift_tdi(event);
         if (e) {
-            return appendTdiShiftToGranulesBuffer(d, e->tdi, e->tdo, e->fromBitIdx,e->toBitIdx, !e->incomplete);
+            return append_tdi_shift_to_granules_buffer(d, e->tdi, e->tdo, e->fromBitIdx,e->toBitIdx, !e->incomplete);
         }
     }
     {
         const struct txvc_jtag_split_flush_all *e = txvc_jtag_split_cast_to_flush_all(event);
         if (e) {
-            bool res = flushGranulesBuffer(d);
+            bool res = flush_granules_buffer(d);
             txvc_spanpool_reclaim_all(&d->compactionPool);
             txvc_mempool_reclaim_all(&d->granulesPool);
             return res;
@@ -623,7 +632,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             channelSelector = 0; /* Single-port device has no channel name in their identifiers */
             break;
         default:
-            ERROR("Unknown chip type: %d\n", d->params.device);
+            ERROR("Unknown chip type\n");
             goto bail_noop;
     }
 
@@ -633,7 +642,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     do {                                                                                           \
         lastStatus = (d2xxCallExpr);                                                               \
         if (lastStatus != FT_OK) {                                                                 \
-            ERROR("Failed: %s: %s\n", #d2xxCallExpr, ftStatusName(lastStatus));                    \
+            ERROR("Failed: %s: %s\n", #d2xxCallExpr, ft_status_name(lastStatus));                  \
             goto cleanupLabel;                                                                     \
         }                                                                                          \
     } while (0)
@@ -647,20 +656,29 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     DWORD numConnectedDevices = sizeof(connectedDevices) / sizeof(connectedDevices[0]);
     REQUIRE_D2XX_SUCCESS_(FT_CreateDeviceInfoList(&numConnectedDevices), bail_noop);
     REQUIRE_D2XX_SUCCESS_(FT_GetDeviceInfoList(connectedDevices, &numConnectedDevices), bail_noop);
-    char *serialNumber = NULL;
-    if (!channelSelector) {
-        serialNumber = connectedDevices[0].SerialNumber;
-    } else {
-        for (DWORD i = 0; i < numConnectedDevices; i++) {
-            char *curSerial = connectedDevices[i].SerialNumber;
-            size_t curSerialLen = strlen(curSerial);
-            if (channelSelector == curSerial[curSerialLen - 1]) {
-                serialNumber = curSerial;
-                break;
+    FT_DEVICE_LIST_INFO_NODE *selectedDevice = NULL;
+    if (numConnectedDevices) {
+        if (!channelSelector) {
+            selectedDevice = &connectedDevices[0];
+        } else {
+            for (DWORD i = 0; i < numConnectedDevices; i++) {
+                char *curSerial = connectedDevices[i].SerialNumber;
+                size_t curSerialLen = strlen(curSerial);
+                if (channelSelector == curSerial[curSerialLen - 1]) {
+                    selectedDevice = & connectedDevices[i];
+                    break;
+                }
             }
         }
     }
-    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(serialNumber, FT_OPEN_BY_SERIAL_NUMBER, &d->ftHandle), bail_cant_open);
+    if (!selectedDevice) {
+        ERROR("No matching device was found\n");
+        goto bail_noop;
+    }
+    INFO("Using device \"%s\" (serial number: \"%s\")\n",
+            selectedDevice->Description, selectedDevice->SerialNumber);
+    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(selectedDevice->SerialNumber, FT_OPEN_BY_SERIAL_NUMBER,
+                &d->ftHandle), bail_cant_open);
 
     REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
@@ -672,8 +690,9 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
 
     txvc_mempool_init(&d->granulesPool, 64 * 1024);
     txvc_spanpool_init(&d->compactionPool, 64 * 1024);
-    resetGranulesBuffer(&d->granulesBuffer);
+    reset_granules_buffer(&d->granulesBuffer);
 
+    d->lastTdi = 0;
     uint8_t setupCmds[] = {
         OP_SET_DBUS_LOBYTE,
         0x08, /* Initial levels: TCK=0, TDI=0, TMS=1 */
@@ -696,13 +715,14 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
                 TXVC_UNREACHABLE();
         }
     }
-    if (!do_transfer(d->ftHandle, setupCmds, sizeof(setupCmds), NULL, 0) || !ensure_synced(d->ftHandle)) {
+    if (!do_transfer(d->ftHandle,
+                &(struct readonly_granule){ .data = setupCmds, .size = sizeof(setupCmds)}, 1,
+                NULL, 0)
+            || !check_device_in_sync(d->ftHandle)) {
         ERROR("Failed to setup device\n");
         goto bail_reset_mode;
     }
-    d->lastTdi = 0;
-
-    if (!txvc_jtag_splitter_init(&d->jtagSplitter, jtagSplitterCallback, d)) {
+    if (!txvc_jtag_splitter_init(&d->jtagSplitter, jtag_splitter_callback, d)) {
         goto bail_reset_mode;
     }
     return true;
@@ -767,8 +787,10 @@ static int set_tck_period(int tckPeriodNs){
         (divider >> 8) & 0xff,
         OP_DISABLE_CLK_DIVIDE_BY_5,
     };
-    if (!do_transfer(d->ftHandle, cmd, d->highSpeedCapable ? 4 : 3, NULL, 0)
-            || !ensure_synced(d->ftHandle)) {
+    if (!do_transfer(d->ftHandle,
+                &(struct readonly_granule){ .data = cmd, .size = d->highSpeedCapable ? 4 : 3,}, 1,
+                NULL, 0)
+            || !check_device_in_sync(d->ftHandle)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
         actualPeriodNs = -1;
     }
@@ -801,7 +823,7 @@ const struct txvc_driver driver_ftdi_generic = {
         "Allowed pin roles:\n"
         PIN_ROLE_LIST_ITEMS(AS_HELP_STRING)
         "Allowed FTDI channels:\n"
-        FTDI_INTERFACE_LIST_ITEMS(AS_HELP_STRING)
+        FTDI_CHANNEL_LIST_ITEMS(AS_HELP_STRING)
         "Allowed chip types\n"
         FTDI_SUPPORTED_DEVICES_LIST_ITEMS(AS_HELP_STRING)
 #undef AS_HELP_STRING
