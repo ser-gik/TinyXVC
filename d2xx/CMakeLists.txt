@@ -1,6 +1,5 @@
-
 #
-# Use d2xx driver from FTDI website
+# This directory downloads and exports official FTDI's prebuilt d2xx driver as IMPORTED library
 #
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
