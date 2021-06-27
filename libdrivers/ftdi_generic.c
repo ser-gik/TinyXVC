@@ -31,7 +31,6 @@
 #include "txvc/bit_vector.h"
 #include "txvc/mempool.h"
 
-#include <WinTypes.h>
 #include <ftd2xx.h>
 
 #include <string.h>
@@ -49,7 +48,7 @@ TXVC_DEFAULT_LOG_TAG(ftdiGeneric);
     X("ft2232h", FT_DEVICE_2232H, "FT2232H chip")                                                  \
     X("ft232h", FT_DEVICE_232H, "FT232H chip")                                                     \
 
-#define FTDI_CHANNEL_LIST_ITEMS(X)                                                               \
+#define FTDI_CHANNEL_LIST_ITEMS(X)                                                                 \
     X("A", 'A', "FTDI' ADBUS channel")                                                             \
     X("B", 'B', "FTDI' BDBUS channel")                                                             \
 
@@ -140,6 +139,41 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
 /*
  * Driver implementation.
  */
+typedef void (*rx_callback_fn)(const uint8_t *rxData, void *cbExtra);
+
+struct rx_callback_node {
+    struct rx_callback_node *next;
+    rx_callback_fn fn;
+    const uint8_t *data;
+    void *extra;
+};
+
+struct ft_transaction {
+    FT_HANDLE ftChip;
+    struct txvc_mempool pool;
+    uint8_t *txBuffer;
+    int txNumBytes;
+    int maxTxBufferBytes;
+    uint8_t *rxBuffer;
+    int rxNumBytes;
+    int maxRxBufferBytes;
+    struct rx_callback_node *rxCallbackFirst;
+    struct rx_callback_node *rxCallbackLast;
+};
+
+struct driver {
+    struct ft_params params;
+    int chipBufferBytes;
+    bool highSpeedCapable;
+    FT_HANDLE ftHandle;
+    struct txvc_jtag_splitter jtagSplitter;
+    unsigned lastTdi : 1;
+    struct txvc_mempool pool;
+    struct ft_transaction transaction;
+};
+
+static struct driver gFtdi;
+
 
 /* FTDI MPSSE opcodes */
 static const uint8_t OP_BAD_COMMANDS = 0xfau;
@@ -154,87 +188,6 @@ static const uint8_t OP_SHIFT_WR_TMS_FLAG = 1u << 6;
 static const uint8_t OP_SET_DBUS_LOBYTE = 0x80u;
 static const uint8_t OP_SET_TCK_DIVISOR = 0x86u;
 static const uint8_t OP_DISABLE_CLK_DIVIDE_BY_5 = 0x8au;
-
-struct readonly_granule {
-    const uint8_t* data;
-    int size;
-};
-
-struct granule {
-    uint8_t* data;
-    int size;
-};
-
-struct bitcopy_params {
-    const uint8_t* src;
-    int fromBit;
-    uint8_t* dst;
-    int toBit;
-    int numBits;
-};
-
-#define GRANULES_BUFFER_CAPACITY 1000
-
-struct granules_buffer {
-    struct readonly_granule outgoing[GRANULES_BUFFER_CAPACITY];
-    int numOutgoingGranules;
-    int numOutgoingBytes;
-    struct granule incoming[GRANULES_BUFFER_CAPACITY];
-    int numIncomingGranules;
-    int numIncomingBytes;
-    struct bitcopy_params postTransferCopy[GRANULES_BUFFER_CAPACITY];
-    int numPostTransferCopies;
-
-    bool lastOutgoingIsOpen;
-};
-
-
-
-
-
-
-
-
-
-
-struct driver {
-    struct ft_params params;
-    int chipBufferBytes;
-    bool highSpeedCapable;
-    FT_HANDLE ftHandle;
-    struct txvc_jtag_splitter jtagSplitter;
-    struct txvc_mempool granulesPool;
-    struct txvc_spanpool compactionPool;
-    struct granules_buffer granulesBuffer;
-    unsigned lastTdi : 1;
-};
-
-static struct driver gFtdi;
-
-
-static inline int min(int a, int b) {
-    return a < b ? a : b;
-}
-
-static inline bool get_bit(const uint8_t* p, int idx) {
-    return !!(p[idx / 8] & (1 << (idx % 8)));
-}
-
-static inline void set_bit(uint8_t* p, int idx, bool bit) {
-    uint8_t* octet = p + idx / 8;
-    if (bit) *octet |= 1 << (idx % 8);
-    else *octet &= ~(1 << (idx % 8));
-}
-
-static void copy_bits(const uint8_t* src, int fromIdx,
-        uint8_t* dst, int toIdx, int numBits, bool duplicateLastBit) {
-    for (int i = 0; i < numBits; i++) {
-        set_bit(dst, toIdx++, get_bit(src, fromIdx++));
-    }
-    if (duplicateLastBit) {
-        set_bit(dst, toIdx, get_bit(src, fromIdx - 1));
-    }
-}
 
 static const char *ft_status_name(FT_STATUS s) {
     switch (s) {
@@ -265,170 +218,173 @@ static const char *ft_status_name(FT_STATUS s) {
     }
 }
 
-static bool do_transfer(FT_HANDLE ft,
-        const struct readonly_granule* outgoingGranules, int numOutgoingGranules,
-        const struct granule* incomingGranules, int numIncomingGranules) {
-    for (int i = 0; i < numOutgoingGranules; i++) {
-        const struct readonly_granule* g = outgoingGranules + i;
-        if (g->size > 0) {
-            DWORD written;
-            FT_STATUS status = FT_Write(ft, (LPVOID *) g->data, g->size, &written);
-            if (!FT_SUCCESS(status)) {
-                ERROR("Failed to send data: %s\n", ft_status_name(status));
-                return false;
-            }
-            if (written != (DWORD) g->size) {
-                ERROR("Sent only %u bytes of %d\n", written, g->size);
-                return false;
-            }
-        }
-    }
+static inline int min(int a, int b) {
+    return a < b ? a : b;
+}
 
-    for (int i = 0; i < numIncomingGranules; i++) {
-        const struct granule* g = incomingGranules + i;
-        if (g->size > 0) {
-            DWORD read;
-            FT_STATUS status = FT_Read(ft, g->data, g->size, &read);
-            if (!FT_SUCCESS(status)) {
-                ERROR("Failed to receive data: %s\n", ft_status_name(status));
-                return false;
-            }
-            if (read != (DWORD) g->size) {
-                ERROR("Received only %u bytes of %d\n", read, g->size);
-                return false;
+static inline bool get_bit(const uint8_t* p, int idx) {
+    return !!(p[idx / 8] & (1 << (idx % 8)));
+}
+
+static inline void set_bit(uint8_t* p, int idx, bool bit) {
+    uint8_t* octet = p + idx / 8;
+    if (bit) *octet |= 1 << (idx % 8);
+    else *octet &= ~(1 << (idx % 8));
+}
+
+static void copy_bits(const uint8_t* src, int fromIdx,
+        uint8_t* dst, int toIdx, int numBits, bool duplicateLastBit) {
+    for (int i = 0; i < numBits; i++) {
+        set_bit(dst, toIdx++, get_bit(src, fromIdx++));
+    }
+    if (duplicateLastBit) {
+        set_bit(dst, toIdx, get_bit(src, fromIdx - 1));
+    }
+}
+
+static void ft_transaction_init(struct ft_transaction *t, FT_HANDLE ftChip, int maxBufferBytes) {
+    t->ftChip = ftChip;
+    txvc_mempool_init(&t->pool, 128 * 1024);
+    t->maxTxBufferBytes = 2 * maxBufferBytes; // TODO explais
+    t->maxRxBufferBytes = maxBufferBytes;
+    t->txBuffer = t->rxBuffer = NULL;
+    t->txNumBytes = t->rxNumBytes = 0;
+    t->rxCallbackFirst = t->rxCallbackLast = NULL;
+}
+
+static void ft_transaction_deinit(struct ft_transaction *t) {
+    txvc_mempool_deinit(&t->pool);
+}
+
+static bool ft_transaction_flush(struct ft_transaction *t) {
+    if (t->txBuffer) {
+        DWORD written;
+        FT_STATUS status = FT_Write(t->ftChip, (LPVOID *) t->txBuffer, t->txNumBytes, &written);
+        if (!FT_SUCCESS(status)) {
+            ERROR("Failed to send data: %s\n", ft_status_name(status));
+            return false;
+        }
+        if (written != (DWORD) t->txNumBytes) {
+            ERROR("Sent only %u bytes of %d\n", written, t->txNumBytes);
+            return false;
+        }
+        t->txBuffer = NULL;
+        t->txNumBytes = 0;
+    }
+    if (t->rxBuffer) {
+        DWORD read;
+        FT_STATUS status = FT_Read(t->ftChip, t->rxBuffer, t->rxNumBytes, &read);
+        if (!FT_SUCCESS(status)) {
+            ERROR("Failed to receive data: %s\n", ft_status_name(status));
+            return false;
+        }
+        if (read != (DWORD) t->rxNumBytes) {
+            ERROR("Received only %u bytes of %d\n", read, t->rxNumBytes);
+            return false;
+        }
+        for (const struct rx_callback_node *cb = t->rxCallbackFirst; cb; cb = cb->next) {
+            cb->fn(cb->data, cb->extra);
+        }
+        t->rxCallbackFirst = t->rxCallbackLast = NULL;
+        t->rxBuffer = NULL;
+        t->rxNumBytes = 0;
+    }
+    txvc_mempool_reclaim_all(&t->pool);
+    return true;
+}
+
+static bool ft_transaction_add_write_to_chip_with_readback(struct ft_transaction *t,
+        const uint8_t *txData, int txNumBytes, rx_callback_fn cb, void *cbExtra, int rxNumBytes) {
+    ALWAYS_ASSERT(txNumBytes <= t->maxRxBufferBytes && rxNumBytes <= t->maxRxBufferBytes);
+    const bool shouldFlush = t->txNumBytes + txNumBytes > t->maxTxBufferBytes
+                          || t->rxNumBytes + rxNumBytes > t->maxRxBufferBytes;
+    if (shouldFlush && !ft_transaction_flush(t)) {
+        return false;
+    }
+    if (txNumBytes > 0) {
+        if (!t->txBuffer) {
+            t->txBuffer = txvc_mempool_alloc_unaligned(&t->pool, t->maxTxBufferBytes);
+        }
+        memcpy(t->txBuffer + t->txNumBytes, txData, txNumBytes);
+        t->txNumBytes += txNumBytes;
+    }
+    if (rxNumBytes > 0) {
+        if (!t->rxBuffer) {
+            t->rxBuffer = txvc_mempool_alloc_unaligned(&t->pool, t->maxRxBufferBytes);
+        }
+        if (cb) {
+            struct rx_callback_node *rxCallback =
+                txvc_mempool_alloc_object(&t->pool, struct rx_callback_node); 
+            rxCallback->next = NULL;
+            rxCallback->fn = cb;
+            rxCallback->data = t->rxBuffer + t->rxNumBytes;
+            rxCallback->extra = cbExtra;
+            if (!t->rxCallbackFirst) {
+                t->rxCallbackFirst = t->rxCallbackLast = rxCallback;
+            } else {
+                t->rxCallbackLast->next = rxCallback;
+                t->rxCallbackLast = rxCallback;
             }
         }
+        t->rxNumBytes += rxNumBytes;
     }
     return true;
 }
 
-static bool check_device_in_sync(FT_HANDLE ft) {
+struct bit_copier_rx_callback_extra {
+    int fromBit;
+    uint8_t* dst;
+    int toBit;
+    int numBits;
+};
+
+static void bit_copier_rx_callback_fn(const uint8_t *rxData, void *cbExtra) {
+    const struct bit_copier_rx_callback_extra *e = cbExtra;
+    copy_bits(rxData, e->fromBit, e->dst, e->toBit, e->numBits, false);
+}
+
+struct byte_copier_rx_callback_extra {
+    uint8_t* dst;
+    int numBytes;
+};
+
+static void byte_copier_rx_callback_fn(const uint8_t *rxData, void *cbExtra) {
+    const struct byte_copier_rx_callback_extra *e = cbExtra;
+    memcpy(e->dst, rxData, e->numBytes);
+}
+
+static inline bool ft_transaction_add_write_to_chip(struct ft_transaction *t,
+        const uint8_t *txData, int txNumBytes) {
+    return ft_transaction_add_write_to_chip_with_readback(t, txData, txNumBytes, 0, NULL, 0);
+}
+
+static bool ft_transaction_add_write_to_chip_with_readback_simple(struct ft_transaction *t,
+        const uint8_t *txData, int txNumBytes, uint8_t *rxData, int rxNumBytes, struct txvc_mempool *pool) {
+    struct byte_copier_rx_callback_extra *e =
+        txvc_mempool_alloc_object(pool, struct byte_copier_rx_callback_extra);
+    e->dst = rxData;
+    e->numBytes = rxNumBytes;
+    return ft_transaction_add_write_to_chip_with_readback(t, txData, txNumBytes,
+            byte_copier_rx_callback_fn, e, rxNumBytes);
+}
+
+static bool check_device_in_sync(struct driver *d) {
     /* Send bad opcode and check that chip responds with "BadCommand" */
     const uint8_t cmd[1] = { 0xab, };
-    struct readonly_granule out = { .data = cmd, .size = sizeof(cmd), };
     uint8_t resp[2];
-    struct granule in = { .data = resp, .size = sizeof(resp), };
-    return do_transfer(ft, &out, 1, &in, 1)
+    return ft_transaction_add_write_to_chip_with_readback_simple(&d->transaction, cmd, 1, resp, 2, &d->pool)
+        && ft_transaction_flush(&d->transaction)
         && resp[0] == OP_BAD_COMMANDS
         && resp[1] == cmd[0];
 }
 
-static void reset_granules_buffer(struct granules_buffer *gb) {
-    gb->numOutgoingGranules = 0;
-    gb->numOutgoingBytes = 0;
-    gb->numIncomingGranules = 0;
-    gb->numIncomingBytes = 0;
-    gb->numPostTransferCopies = 0;
-    gb->lastOutgoingIsOpen = false;
-}
-
-static int max_granule_size(const struct driver *d) {
-    return d->chipBufferBytes;
-}
-
-static bool flush_granules_buffer(struct driver *d) {
-    struct granules_buffer *gb = &d->granulesBuffer;
-    VERBOSE("Flushing granules: %d outgoing (%d bytes), %d incoming (%d bytes)"
-            ", %d post-transfer copy tasks\n",
-            gb->numOutgoingGranules, gb->numOutgoingBytes,
-            gb->numIncomingGranules, gb->numIncomingBytes,
-            gb->numPostTransferCopies);
-    if (gb->numIncomingGranules >= GRANULES_BUFFER_CAPACITY
-            || gb->numOutgoingGranules >= GRANULES_BUFFER_CAPACITY) {
-        WARN("%s: buffer is full, consider increasing capacity\n", __func__);
-    }
-
-    if (gb->lastOutgoingIsOpen) {
-        txvc_spanpool_close_span(&d->compactionPool);
-        gb->lastOutgoingIsOpen = false;
-    }
-    if (!do_transfer(d->ftHandle, gb->outgoing, gb->numOutgoingGranules,
-                gb->incoming, gb->numIncomingGranules)) {
-        return false;
-    }
-
-    for (int i = 0; i < gb->numPostTransferCopies; i++) {
-        const struct bitcopy_params *bp = &gb->postTransferCopy[i];
-        copy_bits(bp->src, bp->fromBit, bp->dst, bp->toBit, bp->numBits, false);
-    }
-    reset_granules_buffer(gb);
-    return true;
-}
-
-static bool append_to_granule_buffer(struct driver *d,
-        const uint8_t *outgoing, int outgoingBytes,
-        uint8_t *incoming, int incomingBytes,
-        const struct bitcopy_params *postTransferCopy) {
-    ALWAYS_ASSERT(outgoingBytes <= max_granule_size(d));
-    ALWAYS_ASSERT(incomingBytes <= max_granule_size(d));
-
-    VERBOSE("Appening granule: %d outgoing bytes, %d incoming bytes, %s post-transfer copy task\n",
-            outgoingBytes, incomingBytes, postTransferCopy ? "with" : "no");
-    struct granules_buffer *gb = &d->granulesBuffer;
-    bool flush = false;
-    if (outgoingBytes > 0 && (gb->numOutgoingGranules >= GRANULES_BUFFER_CAPACITY
-                                || gb->numOutgoingBytes + outgoingBytes > d->chipBufferBytes)) {
-        flush = true;
-    }
-    if (incomingBytes > 0 && (gb->numIncomingGranules >= GRANULES_BUFFER_CAPACITY
-                                || gb->numIncomingBytes + incomingBytes > d->chipBufferBytes)) {
-        flush = true;
-    }
-    if (postTransferCopy && gb->numPostTransferCopies >= GRANULES_BUFFER_CAPACITY) {
-        flush = true;
-    }
-
-    if (flush && !flush_granules_buffer(d)) {
-        return false;
-    }
-
-    if (outgoingBytes > 0) {
-        if (outgoingBytes < 512) {
-            /* Append to the last granule or insert new open granule */
-            if (!gb->lastOutgoingIsOpen) {
-                gb->outgoing[gb->numOutgoingGranules].data =
-                    txvc_spanpool_open_span_unaligned(&d->compactionPool);
-                gb->outgoing[gb->numOutgoingGranules].size = 0;
-                gb->numOutgoingGranules++;
-                gb->lastOutgoingIsOpen = true;
-            }
-            uint8_t *deltaBuffer = txvc_spanpool_span_enlarge(&d->compactionPool, outgoingBytes);
-            memcpy(deltaBuffer, outgoing, outgoingBytes);
-            gb->outgoing[gb->numOutgoingGranules - 1].size += outgoingBytes;
-            gb->numOutgoingBytes += outgoingBytes;
-        } else {
-            /* Append separate granule */
-            if (gb->lastOutgoingIsOpen) {
-                txvc_spanpool_close_span(&d->compactionPool);
-                gb->lastOutgoingIsOpen = false;
-            }
-            gb->outgoing[gb->numOutgoingGranules].data = outgoing;
-            gb->outgoing[gb->numOutgoingGranules].size = outgoingBytes;
-            gb->numOutgoingBytes += outgoingBytes;
-            gb->numOutgoingGranules++;
-        }
-    }
-    if (incomingBytes > 0) {
-        gb->incoming[gb->numIncomingGranules].data = incoming;
-        gb->incoming[gb->numIncomingGranules].size = incomingBytes;
-        gb->numIncomingBytes += incomingBytes;
-        gb->numIncomingGranules++;
-    }
-    if (postTransferCopy) {
-        gb->postTransferCopy[gb->numPostTransferCopies] = *postTransferCopy;
-        gb->numPostTransferCopies++;
-    }
-    return true;
-}
-
-static bool append_tms_shift_to_granules_buffer(struct driver *d,
+static bool append_tms_shift_to_transaction(struct driver *d,
         const uint8_t* tms, int fromBitIdx, int toBitIdx) {
     ALWAYS_ASSERT(fromBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
     while (fromBitIdx < toBitIdx) {
-        uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
         /*
          * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
          * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
@@ -436,22 +392,22 @@ static bool append_tms_shift_to_granules_buffer(struct driver *d,
          */
         const int maxTmsBitsPerCommand = 6;
         const int bitsToTransfer = min(toBitIdx - fromBitIdx, maxTmsBitsPerCommand);
-        cmd[0] = OP_SHIFT_WR_TMS_FLAG
-               | OP_SHIFT_LSB_FIRST_FLAG
-               | OP_SHIFT_BITMODE_FLAG
-               | OP_SHIFT_WR_FALLING_FLAG;
-        cmd[1] = bitsToTransfer - 1;
-        cmd[2] = (!!d->lastTdi) << 7;
+        uint8_t cmd[] = {
+            OP_SHIFT_WR_TMS_FLAG | OP_SHIFT_LSB_FIRST_FLAG
+                | OP_SHIFT_BITMODE_FLAG | OP_SHIFT_WR_FALLING_FLAG,
+            bitsToTransfer - 1,
+            (!!d->lastTdi) << 7,
+        };
         copy_bits(tms, fromBitIdx, &cmd[2], 0, bitsToTransfer, true);
         fromBitIdx += bitsToTransfer;
-        if (!append_to_granule_buffer(d, cmd, 3, NULL, 0, NULL)) {
+        if (!ft_transaction_add_write_to_chip(&d->transaction, cmd, 3)) {
             return false;
         }
     }
     return true;
 }
 
-static bool append_tdi_shift_to_granules_buffer(struct driver *d,
+static bool append_tdi_shift_to_transaction(struct driver *d,
         const uint8_t* tdi, uint8_t* tdo, int fromBitIdx, int toBitIdx, bool lastTmsBitHigh) {
     ALWAYS_ASSERT(fromBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx >= 0);
@@ -484,23 +440,20 @@ static bool append_tdi_shift_to_granules_buffer(struct driver *d,
 
     for (int curIdx = fromBitIdx; curIdx < toBitIdx;) {
         if (curIdx == fromBitIdx && numLeadingBits > 0) {
-            uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-            cmd[0] = OP_SHIFT_RD_TDO_FLAG
-                   | OP_SHIFT_WR_TDI_FLAG
-                   | OP_SHIFT_LSB_FIRST_FLAG
-                   | OP_SHIFT_BITMODE_FLAG
-                   | OP_SHIFT_WR_FALLING_FLAG;
-            cmd[1] = numLeadingBits - 1;
-            cmd[2] = tdi[fromBitIdx / 8] >> (fromBitIdx % 8);
-            uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
-            struct bitcopy_params postCopy = {
-                .src = received,
-                .fromBit = 8 - numLeadingBits,
-                .dst = tdo,
-                .toBit = fromBitIdx,
-                .numBits = numLeadingBits,
+            const uint8_t cmd[] = {
+                OP_SHIFT_RD_TDO_FLAG | OP_SHIFT_WR_TDI_FLAG | OP_SHIFT_LSB_FIRST_FLAG
+                    | OP_SHIFT_BITMODE_FLAG | OP_SHIFT_WR_FALLING_FLAG,
+                numLeadingBits - 1,
+                tdi[fromBitIdx / 8] >> (fromBitIdx % 8),
             };
-            if (!append_to_granule_buffer(d, cmd, 3, received, 1, &postCopy)) {
+            struct bit_copier_rx_callback_extra *e =
+                txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_callback_extra);
+            e->fromBit = 8 - numLeadingBits;
+            e->dst = tdo;
+            e->toBit = fromBitIdx;
+            e->numBits = numLeadingBits;
+            if (!ft_transaction_add_write_to_chip_with_readback(&d->transaction,
+                        cmd, 3, bit_copier_rx_callback_fn, e, 1)) {
                 return false;
             }
             curIdx += numLeadingBits;
@@ -510,41 +463,39 @@ static bool append_tdi_shift_to_granules_buffer(struct driver *d,
                 ALWAYS_ASSERT(innerBeginIdx % 8 == 0);
                 ALWAYS_ASSERT(innerEndIdx % 8 == 0);
                 ALWAYS_ASSERT(curIdx % 8 == 0);
-                const int innerOctetsToSend = min((innerEndIdx - curIdx) / 8, max_granule_size(d));
-                uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-                cmd[0] = OP_SHIFT_RD_TDO_FLAG
-                       | OP_SHIFT_WR_TDI_FLAG
-                       | OP_SHIFT_LSB_FIRST_FLAG
-                       | OP_SHIFT_WR_FALLING_FLAG;
-                cmd[1] = ((innerOctetsToSend - 1) >> 0) & 0xff;
-                cmd[2] = ((innerOctetsToSend - 1) >> 8) & 0xff;
-                if (!append_to_granule_buffer(d, cmd, 3, NULL, 0, NULL)) {
+                const int innerOctetsToSend = min((innerEndIdx - curIdx) / 8, d->chipBufferBytes);
+                const uint8_t cmd[] = {
+                    OP_SHIFT_RD_TDO_FLAG | OP_SHIFT_WR_TDI_FLAG
+                        | OP_SHIFT_LSB_FIRST_FLAG | OP_SHIFT_WR_FALLING_FLAG,
+                    ((innerOctetsToSend - 1) >> 0) & 0xff,
+                    ((innerOctetsToSend - 1) >> 8) & 0xff,
+                };
+                if (!ft_transaction_add_write_to_chip(&d->transaction, cmd, 3)) {
                     return false;
                 }
-                if (!append_to_granule_buffer(d, tdi + curIdx / 8, innerOctetsToSend,
-                                              tdo + curIdx / 8, innerOctetsToSend, NULL)) {
+                if (!ft_transaction_add_write_to_chip_with_readback_simple(&d->transaction,
+                            tdi + curIdx / 8, innerOctetsToSend,
+                            tdo + curIdx / 8, innerOctetsToSend,
+                            &d->pool)) {
                     return false;
                 }
                 curIdx += innerOctetsToSend * 8;
             }
             if (curIdx == innerEndIdx && numTrailingBits > 0) {
-                uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-                cmd[0] = OP_SHIFT_RD_TDO_FLAG
-                       | OP_SHIFT_WR_TDI_FLAG
-                       | OP_SHIFT_LSB_FIRST_FLAG
-                       | OP_SHIFT_BITMODE_FLAG
-                       | OP_SHIFT_WR_FALLING_FLAG;
-                cmd[1] = numTrailingBits - 1;
-                cmd[2] = tdi[innerEndIdx / 8];
-                uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
-                struct bitcopy_params postCopy = {
-                    .src = received,
-                    .fromBit = 8 - numTrailingBits,
-                    .dst = tdo,
-                    .toBit = innerEndIdx,
-                    .numBits = numTrailingBits,
+                const uint8_t cmd[] = {
+                    OP_SHIFT_RD_TDO_FLAG | OP_SHIFT_WR_TDI_FLAG | OP_SHIFT_LSB_FIRST_FLAG
+                        | OP_SHIFT_BITMODE_FLAG | OP_SHIFT_WR_FALLING_FLAG,
+                    numTrailingBits - 1,
+                    tdi[innerEndIdx / 8],
                 };
-                if (!append_to_granule_buffer(d, cmd, 3, received, 1, &postCopy)) {
+                struct bit_copier_rx_callback_extra *e =
+                    txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_callback_extra);
+                e->fromBit = 8 - numTrailingBits;
+                e->dst = tdo;
+                e->toBit = innerEndIdx;
+                e->numBits = numTrailingBits;
+                if (!ft_transaction_add_write_to_chip_with_readback(&d->transaction,
+                            cmd, 3, bit_copier_rx_callback_fn, e, 1)) {
                     return false;
                 }
                 curIdx += numTrailingBits;
@@ -554,27 +505,23 @@ static bool append_tdi_shift_to_granules_buffer(struct driver *d,
         if (curIdx == lastBitIdx) {
             const int lastTdiBit = !!get_bit(tdi, lastBitIdx);
             const int lastTmsBit = !!lastTmsBitHigh;
-            uint8_t *cmd = txvc_mempool_alloc_unaligned(&d->granulesPool, 3);
-            cmd[0] = OP_SHIFT_WR_TMS_FLAG
-                   | OP_SHIFT_RD_TDO_FLAG
-                   | OP_SHIFT_LSB_FIRST_FLAG
-                   | OP_SHIFT_BITMODE_FLAG
-                   | OP_SHIFT_WR_FALLING_FLAG;
-            cmd[1] = 0x00; /* Send 1 bit */
-            cmd[2] = (lastTdiBit << 7) | (lastTmsBit << 1) | lastTmsBit;
-            uint8_t *received = txvc_mempool_alloc_unaligned(&d->granulesPool, 1);
-            struct bitcopy_params postCopy = {
-                .src = received,
-                .fromBit = 7, /* TDO is shifted in from the right side */
-                .dst = tdo,
-                .toBit = lastBitIdx,
-                .numBits = 1,
+            const uint8_t cmd[] = {
+                OP_SHIFT_WR_TMS_FLAG | OP_SHIFT_RD_TDO_FLAG | OP_SHIFT_LSB_FIRST_FLAG
+                    | OP_SHIFT_BITMODE_FLAG | OP_SHIFT_WR_FALLING_FLAG,
+                0x00, /* Send 1 bit */
+                (lastTdiBit << 7) | (lastTmsBit << 1) | lastTmsBit,
             };
-            if (!append_to_granule_buffer(d, cmd, 3, received, 1, &postCopy)) {
+            struct bit_copier_rx_callback_extra *e =
+                txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_callback_extra);
+            e->fromBit = 7; /* TDO is shifted in from the right side */
+            e->dst = tdo;
+            e->toBit = lastBitIdx;
+            e->numBits = 1;
+            if (!ft_transaction_add_write_to_chip_with_readback(&d->transaction,
+                        cmd, 3, bit_copier_rx_callback_fn, e, 1)) {
                 return false;
             }
-
-            /* Update global last TDI bit so that future TMS commands will use proper value when enqueued. */
+            /* Let future TMS commands use proper TDI value when enqueued. */
             d->lastTdi = lastTdiBit;
             curIdx += 1;
         }
@@ -587,21 +534,21 @@ static bool jtag_splitter_callback(const struct txvc_jtag_split_event *event, vo
     {
         const struct txvc_jtag_split_shift_tms *e = txvc_jtag_split_cast_to_shift_tms(event);
         if (e) {
-            return append_tms_shift_to_granules_buffer(d, e->tms, e->fromBitIdx, e->toBitIdx);
+            return append_tms_shift_to_transaction(d, e->tms, e->fromBitIdx, e->toBitIdx);
         }
     }
     {
         const struct txvc_jtag_split_shift_tdi *e = txvc_jtag_split_cast_to_shift_tdi(event);
         if (e) {
-            return append_tdi_shift_to_granules_buffer(d, e->tdi, e->tdo, e->fromBitIdx,e->toBitIdx, !e->incomplete);
+            return append_tdi_shift_to_transaction(d, e->tdi, e->tdo, e->fromBitIdx,e->toBitIdx,
+                    !e->incomplete);
         }
     }
     {
         const struct txvc_jtag_split_flush_all *e = txvc_jtag_split_cast_to_flush_all(event);
         if (e) {
-            bool res = flush_granules_buffer(d);
-            txvc_spanpool_reclaim_all(&d->compactionPool);
-            txvc_mempool_reclaim_all(&d->granulesPool);
+            bool res = ft_transaction_flush(&d->transaction);
+            txvc_mempool_reclaim_all(&d->pool);
             return res;
         }
     }
@@ -688,9 +635,8 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
 
 #undef REQUIRE_D2XX_SUCCESS_
 
-    txvc_mempool_init(&d->granulesPool, 64 * 1024);
-    txvc_spanpool_init(&d->compactionPool, 64 * 1024);
-    reset_granules_buffer(&d->granulesBuffer);
+    txvc_mempool_init(&d->pool, 64 * 1024);
+    ft_transaction_init(&d->transaction, d->ftHandle, d->chipBufferBytes);
 
     d->lastTdi = 0;
     uint8_t setupCmds[] = {
@@ -715,10 +661,9 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
                 TXVC_UNREACHABLE();
         }
     }
-    if (!do_transfer(d->ftHandle,
-                &(struct readonly_granule){ .data = setupCmds, .size = sizeof(setupCmds)}, 1,
-                NULL, 0)
-            || !check_device_in_sync(d->ftHandle)) {
+    if (!ft_transaction_add_write_to_chip(&d->transaction, setupCmds, 3)
+            || !ft_transaction_flush(&d->transaction)
+            || !check_device_in_sync(d)) {
         ERROR("Failed to setup device\n");
         goto bail_reset_mode;
     }
@@ -743,9 +688,9 @@ bail_noop:
 
 static bool deactivate(void){
     struct driver *d = &gFtdi;
+    ft_transaction_deinit(&d->transaction);
     txvc_jtag_splitter_deinit(&d->jtagSplitter);
-    txvc_spanpool_deinit(&d->compactionPool);
-    txvc_mempool_deinit(&d->granulesPool);
+    txvc_mempool_deinit(&d->pool);
     FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
     FT_Close(d->ftHandle);
     return true;
@@ -787,10 +732,9 @@ static int set_tck_period(int tckPeriodNs){
         (divider >> 8) & 0xff,
         OP_DISABLE_CLK_DIVIDE_BY_5,
     };
-    if (!do_transfer(d->ftHandle,
-                &(struct readonly_granule){ .data = cmd, .size = d->highSpeedCapable ? 4 : 3,}, 1,
-                NULL, 0)
-            || !check_device_in_sync(d->ftHandle)) {
+    if (!ft_transaction_add_write_to_chip(&d->transaction, cmd, d->highSpeedCapable ? 4 : 3)
+            || !ft_transaction_flush(&d->transaction)
+            || !check_device_in_sync(d)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
         actualPeriodNs = -1;
     }
