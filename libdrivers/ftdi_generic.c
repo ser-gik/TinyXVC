@@ -110,25 +110,27 @@ struct ft_params {
 };
 
 #define PARAM_LIST_ITEMS(X)                                                                        \
-    X("device", device, str_to_ft_device, > 0, "FTDI chip type")                                   \
-    X("vid", vid, str_to_usb_id, > 0, "USB device vendor ID")                                      \
-    X("pid", pid, str_to_usb_id, > 0, "USB device product ID")                                     \
-    X("channel", channel, str_to_ftdi_interface, != '?', "FTDI channel to use")                    \
-    X("read_latency_ms", read_latency_ms, str_to_ftdi_latency, >= 0, "FTDI latency timer duration")\
-    X("d4", d_pins[4], str_to_pin_role, != PIN_ROLE_INVALID, "D4 pin role")                        \
-    X("d5", d_pins[5], str_to_pin_role, != PIN_ROLE_INVALID, "D5 pin role")                        \
-    X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, "D6 pin role")                        \
-    X("d7", d_pins[7], str_to_pin_role, != PIN_ROLE_INVALID, "D7 pin role")                        \
+    X("device", device, str_to_ft_device, != FT_DEVICE_UNKNOWN, FT_DEVICE_UNKNOWN,                 \
+            "FTDI chip type")                                                                      \
+    X("vid", vid, str_to_usb_id, > 0, 0, "USB device vendor ID")                                   \
+    X("pid", pid, str_to_usb_id, > 0, 0, "USB device product ID")                                  \
+    X("channel", channel, str_to_ftdi_interface, != '?', '?', "FTDI channel to use")               \
+    X("read_latency_ms", read_latency_ms, str_to_ftdi_latency, >= 0, 16,                           \
+            "FTDI latency timer duration")                                                         \
+    X("d4", d_pins[4], str_to_pin_role, != PIN_ROLE_INVALID, PIN_ROLE_INVALID, "D4 pin role")      \
+    X("d5", d_pins[5], str_to_pin_role, != PIN_ROLE_INVALID, PIN_ROLE_INVALID, "D5 pin role")      \
+    X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, PIN_ROLE_INVALID, "D6 pin role")      \
+    X("d7", d_pins[7], str_to_pin_role, != PIN_ROLE_INVALID, PIN_ROLE_INVALID, "D7 pin role")      \
 
 static bool load_config(int numArgs, const char **argNames, const char **argValues,
                             struct ft_params *out) {
-    memset(out, 0, sizeof(*out));
-    out->device = -1;
-    out->channel = '?';
-    out->read_latency_ms = 16;
+#define APPLY_DEFAULTS(name, configField, converterFunc, validation, defVal, descr)                \
+    out->configField = defVal;
+    PARAM_LIST_ITEMS(APPLY_DEFAULTS)
+#undef APPLY_DEFAULTS
 
     for (int i = 0; i < numArgs; i++) {
-#define CONVERT_AND_SET_IF_MATCHES(name, configField, converterFunc, validation, descr)            \
+#define CONVERT_AND_SET_IF_MATCHES(name, configField, converterFunc, validation, defVal, descr)    \
         if (strcmp(name, argNames[i]) == 0) {                                                      \
             out->configField = converterFunc(argValues[i]);                                        \
             continue;                                                                              \
@@ -138,7 +140,7 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
         WARN("Unknown parameter: \"%s\"=\"%s\"\n", argNames[i], argValues[i]);
     }
 
-#define BAIL_IF_NOT_VALID(name, configField, converterFunc, validation, descr)                     \
+#define BAIL_IF_NOT_VALID(name, configField, converterFunc, validation, defVal, descr)             \
     if (!(out->configField validation)) {                                                          \
         ERROR("Bad or missing \"%s\"\n", name);                                                    \
         return false;                                                                              \
@@ -773,11 +775,11 @@ const struct txvc_driver driver_ftdi_generic = {
         "  \"d2\" - TDO\n"
         "  \"d3\" - TMS\n"
         "Parameters:\n"
-#define AS_HELP_STRING(name, configField, converterFunc, validation, descr) \
+#define AS_HELP_STRING(name, configField, converterFunc, validation, defVal, descr)                \
         "  \"" name "\" - " descr "\n"
         PARAM_LIST_ITEMS(AS_HELP_STRING)
 #undef AS_HELP_STRING
-#define AS_HELP_STRING(name, enumVal, descr) \
+#define AS_HELP_STRING(name, enumVal, descr)                                                       \
         "  \"" name "\" - " descr "\n"
         "Allowed pin roles:\n"
         PIN_ROLE_LIST_ITEMS(AS_HELP_STRING)
