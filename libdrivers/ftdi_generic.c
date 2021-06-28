@@ -91,11 +91,21 @@ static int str_to_usb_id(const char *s) {
     return *endp != '\0' ||  res <= 0l || res > 0xffffl ? -1 : (int) res;
 }
 
+static int str_to_ftdi_latency(const char *s) {
+    if (*s == '\0') {
+        return 16; /* Same value as chip uses after reset */
+    }
+    char *endp;
+    long res = strtol(s, &endp, 10);
+    return *endp != '\0' ||  res < 0l || res > 255l ? -1 : (int) res;
+}
+
 struct ft_params {
     FT_DEVICE device;
     int vid;
     int pid;
     char channel;
+    int read_latency_ms;
     enum pin_role d_pins[8];
 };
 
@@ -104,6 +114,7 @@ struct ft_params {
     X("vid", vid, str_to_usb_id, > 0, "USB device vendor ID")                                      \
     X("pid", pid, str_to_usb_id, > 0, "USB device product ID")                                     \
     X("channel", channel, str_to_ftdi_interface, != '?', "FTDI channel to use")                    \
+    X("read_latency_ms", read_latency_ms, str_to_ftdi_latency, >= 0, "FTDI latency timer duration")\
     X("d4", d_pins[4], str_to_pin_role, != PIN_ROLE_INVALID, "D4 pin role")                        \
     X("d5", d_pins[5], str_to_pin_role, != PIN_ROLE_INVALID, "D5 pin role")                        \
     X("d6", d_pins[6], str_to_pin_role, != PIN_ROLE_INVALID, "D6 pin role")                        \
@@ -114,6 +125,7 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
     memset(out, 0, sizeof(*out));
     out->device = -1;
     out->channel = '?';
+    out->read_latency_ms = 16;
 
     for (int i = 0; i < numArgs; i++) {
 #define CONVERT_AND_SET_IF_MATCHES(name, configField, converterFunc, validation, descr)            \
@@ -630,6 +642,9 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetFlowControl(d->ftHandle, FT_FLOW_RTS_CTS, 0, 0), bail_usb_close);
+    VERBOSE("Set latency timer to %dms\n", d->params.read_latency_ms);
+    REQUIRE_D2XX_SUCCESS_(FT_SetLatencyTimer(d->ftHandle, d->params.read_latency_ms),
+            bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_MPSSE), bail_usb_close);
 
