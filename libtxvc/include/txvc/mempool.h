@@ -30,7 +30,7 @@
 #include <stdalign.h>
 
 /**
- * Simple arena allocator that returns unaligned memory blocks.
+ * Simple linear arena allocator.
  * Allocated blocks can be freed only all at once.
  *
  * User MUST NOT access any field directly.
@@ -52,23 +52,4 @@ extern unsigned char *txvc_mempool_alloc_aligned(struct txvc_mempool *mempool,
 #define txvc_mempool_alloc_object(mempool, type) \
     (type *) (txvc_mempool_alloc_aligned(mempool, sizeof(type), alignof(type)))
 extern void txvc_mempool_reclaim_all(struct txvc_mempool *mempool);
-
-
-struct txvc_spanpool {
-    unsigned char *start;
-    unsigned char *end;
-    unsigned char *head;
-    unsigned spanOpen : 1;
-    unsigned fatalOom : 1;
-    void (*release)(unsigned char *start, unsigned char *end);
-};
-
-extern void txvc_spanpool_init(struct txvc_spanpool *spanpool, size_t sz);
-extern void txvc_spanpool_deinit(struct txvc_spanpool *spanpool);
-
-extern unsigned char *txvc_spanpool_open_span_unaligned(struct txvc_spanpool *spanpool);
-extern unsigned char *txvc_spanpool_span_enlarge(struct txvc_spanpool *spanpool, size_t delta);
-extern void txvc_spanpool_close_span(struct txvc_spanpool *spanpool);
-
-extern void txvc_spanpool_reclaim_all(struct txvc_spanpool *spanpool);
 
