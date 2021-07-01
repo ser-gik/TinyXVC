@@ -263,7 +263,7 @@ static void ft_buffer_init(struct ft_buffer *b, FT_HANDLE ftChip, int chipBuffer
      * Buffer limits must be chosen in a such way that:
      * - there will be no unnecessarily frequent flushes
      * - commands in TX buffer will never result in more than one chip buffer of read data (so that
-     *   TX can be written to chip with n risk to get blocked due to full chip buffer)
+     *   TX can be written to chip with no risk to get blocked due to full chip buffer)
      *
      * Hence an optimal RX buffer must be of the same size as chip buffer.
      * TX buffer must be larger to accommodate command headers that do not result in read data. In
