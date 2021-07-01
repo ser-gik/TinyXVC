@@ -153,16 +153,16 @@ static bool load_config(int numArgs, const char **argNames, const char **argValu
 /*
  * Driver implementation.
  */
-typedef void (*rx_callback_fn)(const uint8_t *rxData, void *cbExtra);
+typedef void (*rx_observer_fn)(const uint8_t *rxData, void *extra);
 
-struct rx_callback_node {
-    struct rx_callback_node *next;
-    rx_callback_fn fn;
+struct rx_observer_node {
+    struct rx_observer_node *next;
+    rx_observer_fn fn;
     const uint8_t *data;
     void *extra;
 };
 
-struct ft_transaction {
+struct ft_buffer {
     FT_HANDLE ftChip;
     struct txvc_mempool pool;
     uint8_t *txBuffer;
@@ -171,8 +171,8 @@ struct ft_transaction {
     uint8_t *rxBuffer;
     int rxNumBytes;
     int maxRxBufferBytes;
-    struct rx_callback_node *rxCallbackFirst;
-    struct rx_callback_node *rxCallbackLast;
+    struct rx_observer_node *rxObserverFirst;
+    struct rx_observer_node *rxObserverLast;
 };
 
 struct driver {
@@ -183,7 +183,7 @@ struct driver {
     struct txvc_jtag_splitter jtagSplitter;
     unsigned lastTdi : 1;
     struct txvc_mempool pool;
-    struct ft_transaction transaction;
+    struct ft_buffer cmdBuffer;
 };
 
 static struct driver gFtdi;
@@ -256,138 +256,166 @@ static void copy_bits(const uint8_t* src, int fromIdx,
     }
 }
 
-static void ft_transaction_init(struct ft_transaction *t, FT_HANDLE ftChip, int maxBufferBytes) {
-    t->ftChip = ftChip;
-    txvc_mempool_init(&t->pool, 128 * 1024);
-    t->maxTxBufferBytes = 2 * maxBufferBytes; // TODO explais
-    t->maxRxBufferBytes = maxBufferBytes;
-    t->txBuffer = t->rxBuffer = NULL;
-    t->txNumBytes = t->rxNumBytes = 0;
-    t->rxCallbackFirst = t->rxCallbackLast = NULL;
+static void ft_buffer_init(struct ft_buffer *b, FT_HANDLE ftChip, int chipBufferBytes) {
+    b->ftChip = ftChip;
+    txvc_mempool_init(&b->pool, 128 * 1024);
+    /*
+     * Buffer limits must be chosen in a such way that:
+     * - there will be no unnecessarily frequent flushes
+     * - commands in TX buffer will never result in more than one chip buffer of read data (so that
+     *   TX can be written to chip with n risk to get blocked due to full chip buffer)
+     *
+     * Hence an optimal RX buffer must be of the same size as chip buffer.
+     * TX buffer must be larger to accommodate command headers that do not result in read data. In
+     * the worst case (bitmode write with read) each 3 written bytes result in 1 read byte;
+     */
+    b->maxTxBufferBytes = 3 * chipBufferBytes;
+    b->maxRxBufferBytes = chipBufferBytes;
+    b->txBuffer = b->rxBuffer = NULL;
+    b->txNumBytes = b->rxNumBytes = 0;
+    b->rxObserverFirst = b->rxObserverLast = NULL;
 }
 
-static void ft_transaction_deinit(struct ft_transaction *t) {
-    txvc_mempool_deinit(&t->pool);
-}
-
-static bool ft_transaction_flush(struct ft_transaction *t) {
-    if (t->txBuffer) {
+static bool ft_buffer_flush(struct ft_buffer *b) {
+    if (b->txBuffer) {
         DWORD written;
-        FT_STATUS status = FT_Write(t->ftChip, (LPVOID *) t->txBuffer, t->txNumBytes, &written);
+        FT_STATUS status = FT_Write(b->ftChip, (LPVOID *) b->txBuffer, b->txNumBytes, &written);
         if (!FT_SUCCESS(status)) {
             ERROR("Failed to send data: %s\n", ft_status_name(status));
             return false;
         }
-        if (written != (DWORD) t->txNumBytes) {
-            ERROR("Sent only %u bytes of %d\n", written, t->txNumBytes);
+        if (written != (DWORD) b->txNumBytes) {
+            ERROR("Sent only %u bytes of %d\n", written, b->txNumBytes);
             return false;
         }
-        t->txBuffer = NULL;
-        t->txNumBytes = 0;
+        b->txBuffer = NULL;
+        b->txNumBytes = 0;
     }
-    if (t->rxBuffer) {
+    if (b->rxBuffer) {
         DWORD read;
-        FT_STATUS status = FT_Read(t->ftChip, t->rxBuffer, t->rxNumBytes, &read);
+        FT_STATUS status = FT_Read(b->ftChip, b->rxBuffer, b->rxNumBytes, &read);
         if (!FT_SUCCESS(status)) {
             ERROR("Failed to receive data: %s\n", ft_status_name(status));
             return false;
         }
-        if (read != (DWORD) t->rxNumBytes) {
-            ERROR("Received only %u bytes of %d\n", read, t->rxNumBytes);
+        if (read != (DWORD) b->rxNumBytes) {
+            ERROR("Received only %u bytes of %d\n", read, b->rxNumBytes);
             return false;
         }
-        for (const struct rx_callback_node *cb = t->rxCallbackFirst; cb; cb = cb->next) {
-            cb->fn(cb->data, cb->extra);
+        for (const struct rx_observer_node *o = b->rxObserverFirst; o; o = o->next) {
+            o->fn(o->data, o->extra);
         }
-        t->rxCallbackFirst = t->rxCallbackLast = NULL;
-        t->rxBuffer = NULL;
-        t->rxNumBytes = 0;
+        b->rxObserverFirst = b->rxObserverLast = NULL;
+        b->rxBuffer = NULL;
+        b->rxNumBytes = 0;
     }
-    txvc_mempool_reclaim_all(&t->pool);
+    txvc_mempool_reclaim_all(&b->pool);
     return true;
 }
 
-static bool ft_transaction_add_write_to_chip_with_readback(struct ft_transaction *t,
-        const uint8_t *txData, int txNumBytes, rx_callback_fn cb, void *cbExtra, int rxNumBytes) {
-    ALWAYS_ASSERT(txNumBytes <= t->maxRxBufferBytes && rxNumBytes <= t->maxRxBufferBytes);
-    const bool shouldFlush = t->txNumBytes + txNumBytes > t->maxTxBufferBytes
-                          || t->rxNumBytes + rxNumBytes > t->maxRxBufferBytes;
-    if (shouldFlush && !ft_transaction_flush(t)) {
-        return false;
-    }
+static void ft_buffer_deinit(struct ft_buffer *b) {
+    ft_buffer_flush(b);
+    txvc_mempool_deinit(&b->pool);
+}
+
+static bool ft_buffer_append(struct ft_buffer *b, const uint8_t *txData, int txNumBytes,
+        rx_observer_fn observer, void *observerExtra, int rxNumBytes) {
     if (txNumBytes > 0) {
-        if (!t->txBuffer) {
-            t->txBuffer = txvc_mempool_alloc_unaligned(&t->pool, t->maxTxBufferBytes);
+        if (!b->txBuffer) {
+            b->txBuffer = txvc_mempool_alloc_unaligned(&b->pool, b->maxTxBufferBytes);
         }
-        memcpy(t->txBuffer + t->txNumBytes, txData, txNumBytes);
-        t->txNumBytes += txNumBytes;
+        memcpy(b->txBuffer + b->txNumBytes, txData, txNumBytes);
+        b->txNumBytes += txNumBytes;
     }
     if (rxNumBytes > 0) {
-        if (!t->rxBuffer) {
-            t->rxBuffer = txvc_mempool_alloc_unaligned(&t->pool, t->maxRxBufferBytes);
+        if (!b->rxBuffer) {
+            b->rxBuffer = txvc_mempool_alloc_unaligned(&b->pool, b->maxRxBufferBytes);
         }
-        if (cb) {
-            struct rx_callback_node *rxCallback =
-                txvc_mempool_alloc_object(&t->pool, struct rx_callback_node); 
-            rxCallback->next = NULL;
-            rxCallback->fn = cb;
-            rxCallback->data = t->rxBuffer + t->rxNumBytes;
-            rxCallback->extra = cbExtra;
-            if (!t->rxCallbackFirst) {
-                t->rxCallbackFirst = t->rxCallbackLast = rxCallback;
+        if (observer) {
+            struct rx_observer_node *node =
+                txvc_mempool_alloc_object(&b->pool, struct rx_observer_node); 
+            node->next = NULL;
+            node->fn = observer;
+            node->data = b->rxBuffer + b->rxNumBytes;
+            node->extra = observerExtra;
+            if (!b->rxObserverFirst) {
+                b->rxObserverFirst = b->rxObserverLast = node;
             } else {
-                t->rxCallbackLast->next = rxCallback;
-                t->rxCallbackLast = rxCallback;
+                b->rxObserverLast->next = node;
+                b->rxObserverLast = node;
             }
         }
-        t->rxNumBytes += rxNumBytes;
+        b->rxNumBytes += rxNumBytes;
     }
     return true;
 }
 
-struct bit_copier_rx_callback_extra {
+static bool ft_buffer_ensure_can_append(struct ft_buffer *b, int txNumBytes, int rxNumBytes) {
+    ALWAYS_ASSERT(txNumBytes <= b->maxRxBufferBytes && rxNumBytes <= b->maxRxBufferBytes);
+    const bool shouldFlush = b->txNumBytes + txNumBytes > b->maxTxBufferBytes
+                          || b->rxNumBytes + rxNumBytes > b->maxRxBufferBytes;
+    if (shouldFlush && !ft_buffer_flush(b)) {
+        return false;
+    }
+    return true;
+}
+
+static bool ft_buffer_add_write_to_chip_with_readback(struct ft_buffer *b,
+        const uint8_t *txData, int txNumBytes,
+        rx_observer_fn observer, void *observerExtra, int rxNumBytes) {
+    return ft_buffer_ensure_can_append(b, txNumBytes, rxNumBytes)
+        && ft_buffer_append(b, txData, txNumBytes, observer, observerExtra, rxNumBytes);
+}
+
+struct bit_copier_rx_observer_extra {
     int fromBit;
     uint8_t* dst;
     int toBit;
     int numBits;
 };
 
-static void bit_copier_rx_callback_fn(const uint8_t *rxData, void *cbExtra) {
-    const struct bit_copier_rx_callback_extra *e = cbExtra;
+static void bit_copier_rx_observer_fn(const uint8_t *rxData, void *extra) {
+    const struct bit_copier_rx_observer_extra *e = extra;
     copy_bits(rxData, e->fromBit, e->dst, e->toBit, e->numBits, false);
 }
 
-struct byte_copier_rx_callback_extra {
+struct byte_copier_rx_observer_extra {
     uint8_t* dst;
     int numBytes;
 };
 
-static void byte_copier_rx_callback_fn(const uint8_t *rxData, void *cbExtra) {
-    const struct byte_copier_rx_callback_extra *e = cbExtra;
+static void byte_copier_rx_observer_fn(const uint8_t *rxData, void *extra) {
+    const struct byte_copier_rx_observer_extra *e = extra;
     memcpy(e->dst, rxData, e->numBytes);
 }
 
-static inline bool ft_transaction_add_write_to_chip(struct ft_transaction *t,
+static inline bool ft_buffer_add_write_to_chip(struct ft_buffer *b,
         const uint8_t *txData, int txNumBytes) {
-    return ft_transaction_add_write_to_chip_with_readback(t, txData, txNumBytes, 0, NULL, 0);
+    return ft_buffer_add_write_to_chip_with_readback(b, txData, txNumBytes, 0, NULL, 0);
 }
 
-static bool ft_transaction_add_write_to_chip_with_readback_simple(struct ft_transaction *t,
-        const uint8_t *txData, int txNumBytes, uint8_t *rxData, int rxNumBytes, struct txvc_mempool *pool) {
-    struct byte_copier_rx_callback_extra *e =
-        txvc_mempool_alloc_object(pool, struct byte_copier_rx_callback_extra);
+static bool ft_buffer_add_write_to_chip_with_readback_simple(struct ft_buffer *t,
+        const uint8_t *txData, int txNumBytes, uint8_t *rxData, int rxNumBytes) {
+    /*
+     * Flush if needed right now, to not invalidate below allocated observer extra
+     * before it is added to a list
+     */
+    if (!ft_buffer_ensure_can_append(t, txNumBytes, rxNumBytes)) {
+        return false;
+    }
+    struct byte_copier_rx_observer_extra *e =
+        txvc_mempool_alloc_object(&t->pool, struct byte_copier_rx_observer_extra);
     e->dst = rxData;
     e->numBytes = rxNumBytes;
-    return ft_transaction_add_write_to_chip_with_readback(t, txData, txNumBytes,
-            byte_copier_rx_callback_fn, e, rxNumBytes);
+    return ft_buffer_append(t, txData, txNumBytes, byte_copier_rx_observer_fn, e, rxNumBytes);
 }
 
 static bool check_device_in_sync(struct driver *d) {
     /* Send bad opcode and check that chip responds with "BadCommand" */
     const uint8_t cmd[1] = { 0xab, };
     uint8_t resp[2];
-    return ft_transaction_add_write_to_chip_with_readback_simple(&d->transaction, cmd, 1, resp, 2, &d->pool)
-        && ft_transaction_flush(&d->transaction)
+    return ft_buffer_add_write_to_chip_with_readback_simple(&d->cmdBuffer, cmd, 1, resp, 2)
+        && ft_buffer_flush(&d->cmdBuffer)
         && resp[0] == OP_BAD_COMMANDS
         && resp[1] == cmd[0];
 }
@@ -414,7 +442,7 @@ static bool append_tms_shift_to_transaction(struct driver *d,
         };
         copy_bits(tms, fromBitIdx, &cmd[2], 0, bitsToTransfer, true);
         fromBitIdx += bitsToTransfer;
-        if (!ft_transaction_add_write_to_chip(&d->transaction, cmd, 3)) {
+        if (!ft_buffer_add_write_to_chip(&d->cmdBuffer, cmd, 3)) {
             return false;
         }
     }
@@ -428,6 +456,8 @@ static bool append_tdi_shift_to_transaction(struct driver *d,
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
     /*
+     * TODO update this
+     *
      * To minimize copying as much as possible we divide vectors onto ranges that have their
      * adjacent boundaries at appropriate octet boundaries (i.e. multiples of 8), so that
      * a payload for transferring bytes from the middle range can be constructed by direct
@@ -460,14 +490,14 @@ static bool append_tdi_shift_to_transaction(struct driver *d,
                 numLeadingBits - 1,
                 tdi[fromBitIdx / 8] >> (fromBitIdx % 8),
             };
-            struct bit_copier_rx_callback_extra *e =
-                txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_callback_extra);
+            struct bit_copier_rx_observer_extra *e =
+                txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_observer_extra);
             e->fromBit = 8 - numLeadingBits;
             e->dst = tdo;
             e->toBit = fromBitIdx;
             e->numBits = numLeadingBits;
-            if (!ft_transaction_add_write_to_chip_with_readback(&d->transaction,
-                        cmd, 3, bit_copier_rx_callback_fn, e, 1)) {
+            if (!ft_buffer_add_write_to_chip_with_readback(&d->cmdBuffer,
+                        cmd, 3, bit_copier_rx_observer_fn, e, 1)) {
                 return false;
             }
             curIdx += numLeadingBits;
@@ -484,13 +514,12 @@ static bool append_tdi_shift_to_transaction(struct driver *d,
                     ((innerOctetsToSend - 1) >> 0) & 0xff,
                     ((innerOctetsToSend - 1) >> 8) & 0xff,
                 };
-                if (!ft_transaction_add_write_to_chip(&d->transaction, cmd, 3)) {
+                if (!ft_buffer_add_write_to_chip(&d->cmdBuffer, cmd, 3)) {
                     return false;
                 }
-                if (!ft_transaction_add_write_to_chip_with_readback_simple(&d->transaction,
+                if (!ft_buffer_add_write_to_chip_with_readback_simple(&d->cmdBuffer,
                             tdi + curIdx / 8, innerOctetsToSend,
-                            tdo + curIdx / 8, innerOctetsToSend,
-                            &d->pool)) {
+                            tdo + curIdx / 8, innerOctetsToSend)) {
                     return false;
                 }
                 curIdx += innerOctetsToSend * 8;
@@ -502,14 +531,14 @@ static bool append_tdi_shift_to_transaction(struct driver *d,
                     numTrailingBits - 1,
                     tdi[innerEndIdx / 8],
                 };
-                struct bit_copier_rx_callback_extra *e =
-                    txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_callback_extra);
+                struct bit_copier_rx_observer_extra *e =
+                    txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_observer_extra);
                 e->fromBit = 8 - numTrailingBits;
                 e->dst = tdo;
                 e->toBit = innerEndIdx;
                 e->numBits = numTrailingBits;
-                if (!ft_transaction_add_write_to_chip_with_readback(&d->transaction,
-                            cmd, 3, bit_copier_rx_callback_fn, e, 1)) {
+                if (!ft_buffer_add_write_to_chip_with_readback(&d->cmdBuffer,
+                            cmd, 3, bit_copier_rx_observer_fn, e, 1)) {
                     return false;
                 }
                 curIdx += numTrailingBits;
@@ -525,14 +554,14 @@ static bool append_tdi_shift_to_transaction(struct driver *d,
                 0x00, /* Send 1 bit */
                 (lastTdiBit << 7) | (lastTmsBit << 1) | lastTmsBit,
             };
-            struct bit_copier_rx_callback_extra *e =
-                txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_callback_extra);
+            struct bit_copier_rx_observer_extra *e =
+                txvc_mempool_alloc_object(&d->pool, struct bit_copier_rx_observer_extra);
             e->fromBit = 7; /* TDO is shifted in from the right side */
             e->dst = tdo;
             e->toBit = lastBitIdx;
             e->numBits = 1;
-            if (!ft_transaction_add_write_to_chip_with_readback(&d->transaction,
-                        cmd, 3, bit_copier_rx_callback_fn, e, 1)) {
+            if (!ft_buffer_add_write_to_chip_with_readback(&d->cmdBuffer,
+                        cmd, 3, bit_copier_rx_observer_fn, e, 1)) {
                 return false;
             }
             /* Let future TMS commands use proper TDI value when enqueued. */
@@ -561,7 +590,7 @@ static bool jtag_splitter_callback(const struct txvc_jtag_split_event *event, vo
     {
         const struct txvc_jtag_split_flush_all *e = txvc_jtag_split_cast_to_flush_all(event);
         if (e) {
-            bool res = ft_transaction_flush(&d->transaction);
+            bool res = ft_buffer_flush(&d->cmdBuffer);
             txvc_mempool_reclaim_all(&d->pool);
             return res;
         }
@@ -610,7 +639,8 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
 
     DWORD ver;
     REQUIRE_D2XX_SUCCESS_(FT_GetLibraryVersion(&ver), bail_noop);
-    INFO("Using d2xx v.%x.%x.%x\n", (ver >> 16) & 0xffu, (ver >> 8) & 0xffu, (ver >> 0) & 0xffu);
+    INFO("Using d2xx driver v.%x.%x.%x\n",
+            (ver >> 16) & 0xffu, (ver >> 8) & 0xffu, (ver >> 0) & 0xffu);
 
     REQUIRE_D2XX_SUCCESS_(FT_SetVIDPID(d->params.vid,d->params.pid), bail_noop);
     FT_DEVICE_LIST_INFO_NODE connectedDevices[4];
@@ -653,7 +683,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
 #undef REQUIRE_D2XX_SUCCESS_
 
     txvc_mempool_init(&d->pool, 64 * 1024);
-    ft_transaction_init(&d->transaction, d->ftHandle, d->chipBufferBytes);
+    ft_buffer_init(&d->cmdBuffer, d->ftHandle, d->chipBufferBytes);
 
     d->lastTdi = 0;
     uint8_t setupCmds[] = {
@@ -678,8 +708,7 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
                 TXVC_UNREACHABLE();
         }
     }
-    if (!ft_transaction_add_write_to_chip(&d->transaction, setupCmds, 3)
-            || !ft_transaction_flush(&d->transaction)
+    if (!ft_buffer_add_write_to_chip(&d->cmdBuffer, setupCmds, 3)
             || !check_device_in_sync(d)) {
         ERROR("Failed to setup device\n");
         goto bail_reset_mode;
@@ -705,7 +734,7 @@ bail_noop:
 
 static bool deactivate(void){
     struct driver *d = &gFtdi;
-    ft_transaction_deinit(&d->transaction);
+    ft_buffer_deinit(&d->cmdBuffer);
     txvc_jtag_splitter_deinit(&d->jtagSplitter);
     txvc_mempool_deinit(&d->pool);
     FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
@@ -749,8 +778,7 @@ static int set_tck_period(int tckPeriodNs){
         (divider >> 8) & 0xff,
         OP_DISABLE_CLK_DIVIDE_BY_5,
     };
-    if (!ft_transaction_add_write_to_chip(&d->transaction, cmd, d->highSpeedCapable ? 4 : 3)
-            || !ft_transaction_flush(&d->transaction)
+    if (!ft_buffer_add_write_to_chip(&d->cmdBuffer, cmd, d->highSpeedCapable ? 4 : 3)
             || !check_device_in_sync(d)) {
         ERROR("Can't set TCK period %dns\n", tckPeriodNs);
         actualPeriodNs = -1;
