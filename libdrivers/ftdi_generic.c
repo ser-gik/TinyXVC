@@ -734,8 +734,8 @@ bail_noop:
 
 static bool deactivate(void){
     struct driver *d = &gFtdi;
-    ft_buffer_deinit(&d->cmdBuffer);
     txvc_jtag_splitter_deinit(&d->jtagSplitter);
+    ft_buffer_deinit(&d->cmdBuffer);
     txvc_mempool_deinit(&d->pool);
     FT_SetBitMode(d->ftHandle, 0x00, FT_BITMODE_RESET);
     FT_Close(d->ftHandle);
