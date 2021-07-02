@@ -1,49 +1,73 @@
 
 # TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server
 
-## Introduction
+## Purpose
 
-This program is an implementation of [XVC](https://github.com/Xilinx/XilinxVirtualCable/blob/master/README.md)
-protocol, that allows user to connect their custom hardware to the development tools via "virtual cable".
+TinyXVC allows you to connect Xilinx FPGAs to a Vivado or ISE without using
+expensive Xilinx Platform Cable. 
 
-Currently `txvc` supports only one type of backend - FT2232H chip, that acts as intermediate between
-PC and JTAG TAP.
+Instead it provides a ["virtual cable"](https://github.com/Xilinx/XilinxVirtualCable/blob/master/README.md)
+on top of an affordable FTDI chip that connects FPGA' JTAG TAP pins to your computer USB. This is the only
+additional hardware that one needs to start! Just use any of a myriad of breakout boards or
+cables that feature MPSSE-capable FTDI chip (already tested with FT232H, FT2232H):
+    - connect breakout board/cable to your PC USB
+    - connect JTAG pins (TCK, TMS, TDI, TDO) of FTDI chip to JTAG TAP of your FPGA (ensure first
+that it tolerates 3.3V IO levels from FTDI, otherwise you may need a shifter) 
 
-Users are encouraged to add their own backend implementations.
+## How To Use?
 
-## How to use
-
-Currently `txvc` supports only Linux hosts. To install needed tools and dependencies run:
+Once FPGA is connected to a PC via appropriate cable or dongle, start `txvc` with an appropriate
+options. Assuming we have FT232H cable it can be as a simple as:
 ```
-$ sudo apt install build-essential
-$ sudo apt install cmake
-$ sudo apt install libftdi1-dev
+$ txvc -p ft232h
+      3341:            txvc: I: Found alias ft232h (FT232H-based USB to JTAG cable),
+      3387:            txvc: I: Using profile ftdi-generic:device=ft232h,vid=0403,pid=6014,channel=A,read_latency_millis=1,d4=ignored,d5=ignored,d6=ignored,d7=ignored,
+      3422:     ftdiGeneric: I: Using d2xx driver v.1.4.24
+      7887:     ftdiGeneric: I: Using device "Single RS232-HS" (serial number: "")
+     14185:          server: I: Listening for incoming connections at 127.0.0.1:2542...
 ```
-Once sources are checked out it can be built with:
+
+When it is listening for client to connect - open Vivado' Hardware Manager and via "Open target"
+connect to a virtual cable at address that is shown in `txvc` log. If using ISE - launch iMPACT
+and via "Cable setup..." choose "Cable Plug-in" with next configuration:
+```
+xilinx_xvc host=127.0.0.1:2542 disableversioncheck=true
+```
+That's it!
+
+To get more info about available options:
+```
+$ txvc -h
+```
+## Limitations
+
+Currently `txvc` supports only MPSSE-capable FTDI chips as an intermediate between FPGA and dev
+machine, though other "backends" can be added easily.
+Supported and tested chips are:
+    - FT232H
+    - FT2232H
+Other models should also work but were not tested.
+
+## How To Build?
+
+Build was tested on Ubuntu 20.04 but should work on many other distros.
+
+Install tools and dependencies:
+```
+$ sudo apt install build-essential cmake libftdi1-dev
+```
+Once sources are checked out, build with next:
 ```
 $ cd TinyXVC
 $ mkdir build && cd $_
-$ cmake ../
-$ make all
-```
-To run `txvc` you need to provide a "profile" to initialize backend appropriately for interacting
-with your hardware. E.g.:
-```
-$ ./txvc -p mimas_a7
-```
-To get info about profiles and other options:
-```
-$ ./txvc -h
+$ cmake ../ && make all
+$ txvc/txvc -h
 ```
 
 ## Troubleshooting
 
-If you're experiencing failures from `ftdi_usb_open()`:
-- ensure that kernel `ftdi_sio` module is unloaded:
-  ```
-  $ sudo modprobe -r ftdi_sio
-  ```
-- install appropriate udev rules by following instructions from `udev/` and restart PC
+You may need an appropriate udev rules to be able to open USB devices w/o root access. Follow
+instructions from `udev/` and reload rules
 
 ## Supported Boards/Existing profiles 
 Boards - Profile
@@ -51,3 +75,8 @@ Boards - Profile
 - Numato Lab Mimas A7 FPGA Development Board    - mimas_a7
 - Numato Lab Mimas Mini FPGA Development Board  - mimas_a7_mini
 - Numato Lab Narvi Sparten 7 FPGA Module        - narvi
+
+Generic cables - Profile
+
+- FT232H cable                                   - ft232h
+

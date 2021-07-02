@@ -32,7 +32,7 @@ TXVC_DEFAULT_LOG_TAG(driverWrapper);
 
 struct txvc_driver txvcDriverWrapper;
 
-#define DEFAULT_TCK_PERIOD 1000
+#define DEFAULT_TCK_PERIOD 100
 
 static int (*orig_set_tck_period)(int tckPeriodNs);
 static bool (*orig_shift_bits)(int numBits,
