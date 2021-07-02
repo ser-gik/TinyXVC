@@ -391,6 +391,8 @@ static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdi
 const struct txvc_driver driver_ft2232h = {
     .name = "ft2232h",
     .help =
+        " !!! DEPRECATED !!!\n"
+        "use \"ftdi-generic\" instead\n\n"
         "Sends vectors to the device behind FT2232H chip, which is connected to this machine USB\n"
         "Parameters:\n"
 #define AS_HELP_STRING(name, configField, converterFunc, validation, descr) \

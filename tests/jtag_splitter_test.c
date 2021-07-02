@@ -33,17 +33,12 @@ TEST_SUITE(JtagSplitter)
 static struct txvc_jtag_splitter gUut;
 
 static struct mock {
-    int i;
-
-
-
+    int dummy;
 } gMock;
-
 
 static bool mock_splitter_callback(const struct txvc_jtag_split_event *event, void* extra) {
     (void) event;
     (void) extra;
-
     return true;
 }
 
@@ -55,9 +50,6 @@ DO_AFTER_EACH_CASE() {
     ASSERT_TRUE(txvc_jtag_splitter_deinit(&gUut));
 }
 
-TEST_CASE(Dummy) {
-    /*
-     * TODO
-     */
-}
-
+/*
+ * TODO implement tests
+ */

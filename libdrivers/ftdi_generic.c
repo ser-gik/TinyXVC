@@ -396,8 +396,7 @@ static inline bool ft_buffer_add_write_to_chip(struct ft_buffer *b,
 
 static bool ft_buffer_add_write_to_chip_with_readback_simple(struct ft_buffer *t,
         const uint8_t *txData, int txNumBytes, uint8_t *rxData, int rxNumBytes) {
-    /*
-     * Flush if needed right now, to not invalidate below allocated observer extra
+    /* Flush if needed right now, to not invalidate below allocated observer extra
      * before it is added to a list
      */
     if (!ft_buffer_ensure_can_append(t, txNumBytes, rxNumBytes)) {
@@ -427,8 +426,7 @@ static bool append_tms_shift_to_transaction(struct driver *d,
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
     while (fromBitIdx < toBitIdx) {
-        /*
-         * In theory it is possible to send up to 7 TMS bits per command but we reserve one to
+        /* In theory it is possible to send up to 7 TMS bits per command but we reserve one to
          * duplicate the last bit which is needed to guarantee that TMS wire level is unchanged
          * after command is completed.
          */
@@ -455,13 +453,9 @@ static bool append_tdi_shift_to_transaction(struct driver *d,
     ALWAYS_ASSERT(toBitIdx >= 0);
     ALWAYS_ASSERT(toBitIdx > fromBitIdx);
 
-    /*
-     * TODO update this
-     *
-     * To minimize copying as much as possible we divide vectors onto ranges that have their
-     * adjacent boundaries at appropriate octet boundaries (i.e. multiples of 8), so that
-     * a payload for transferring bytes from the middle range can be constructed by direct
-     * referencing tdi and tdo buffers.
+    /* To minimize bit manipulations as much as possible we divide vectors onto ranges that have
+     * their adjacent boundaries at appropriate octet boundaries (i.e. multiples of 8), so that
+     * memcpy(3) can be used to transfer data to/from ft_buffer..
      * Ranges are:
      * - leading, 0 to 7 bits. Length is chosen in a such way that it ends at octet
      *   boundary except for when last bit (see below) falls into leading range.
@@ -641,7 +635,6 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     REQUIRE_D2XX_SUCCESS_(FT_GetLibraryVersion(&ver), bail_noop);
     INFO("Using d2xx driver v.%x.%x.%x\n",
             (ver >> 16) & 0xffu, (ver >> 8) & 0xffu, (ver >> 0) & 0xffu);
-
     REQUIRE_D2XX_SUCCESS_(FT_SetVIDPID(d->params.vid,d->params.pid), bail_noop);
     FT_DEVICE_LIST_INFO_NODE connectedDevices[4];
     DWORD numConnectedDevices = sizeof(connectedDevices) / sizeof(connectedDevices[0]);
@@ -670,7 +663,6 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
             selectedDevice->Description, selectedDevice->SerialNumber);
     REQUIRE_D2XX_SUCCESS_(FT_OpenEx(selectedDevice->SerialNumber, FT_OPEN_BY_SERIAL_NUMBER,
                 &d->ftHandle), bail_cant_open);
-
     REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetFlowControl(d->ftHandle, FT_FLOW_RTS_CTS, 0, 0), bail_usb_close);

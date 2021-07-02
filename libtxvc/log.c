@@ -91,7 +91,7 @@ static bool tag_disabled(struct txvc_log_tag *tag) {
 }
 
 void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel) {
-    if (!gTagSpec) free(gTagSpec);
+    if (gTagSpec) free(gTagSpec);
     gTagSpec = strdup(tagSpec);
     gMinLevel = minLevel;
     gCurConfigId++;
