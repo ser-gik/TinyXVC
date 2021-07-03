@@ -5,9 +5,19 @@ jobs:
       - image: cimg/base:2021.05
     steps:
       - checkout
-      - run: cc --version
-      - run: make --version
-      - run: cmake --version
+      - run:
+          command: sudo apt install build-essential cmake libftdi1-dev
+      - run:
+          command: mkdir build
+      - run:
+          working_directory: build
+          command: cmake ../
+      - run:
+          working_directory: build
+          command: make all
+      - run:
+          working_directory: build
+          command: make UnitTest
 
 workflows:
  version: 2
