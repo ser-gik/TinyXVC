@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Sergey Guralnik
+ * Copyright 2021 Sergey Guralnik
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -24,21 +24,32 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "driver.h"
+#include "ttest/test.h"
 
-#include <stddef.h>
+#include "txvc/jtag_splitter.h"
 
-/* These symbols are defined in driver.ld */
-extern const struct txvc_driver __txvc_drivers_begin[];
-extern const struct txvc_driver __txvc_drivers_end[];
+TEST_SUITE(JtagSplitter)
 
-const struct txvc_driver* txvc_enumerate_drivers(
-        bool (*fn)(const struct txvc_driver *d, const void *extra), const void *extra) {
-    for (const struct txvc_driver* d = __txvc_drivers_begin; d != __txvc_drivers_end; d++) {
-        if(!fn(d, extra)) {
-            return d;
-        }
-    }
-    return NULL;
+static struct txvc_jtag_splitter gUut;
+
+static struct mock {
+    int dummy;
+} gMock;
+
+static bool mock_splitter_callback(const struct txvc_jtag_split_event *event, void* extra) {
+    (void) event;
+    (void) extra;
+    return true;
 }
 
+DO_BEFORE_EACH_CASE() {
+    ASSERT_TRUE(txvc_jtag_splitter_init(&gUut, mock_splitter_callback, &gMock));
+}
+
+DO_AFTER_EACH_CASE() {
+    ASSERT_TRUE(txvc_jtag_splitter_deinit(&gUut));
+}
+
+/*
+ * TODO implement tests
+ */

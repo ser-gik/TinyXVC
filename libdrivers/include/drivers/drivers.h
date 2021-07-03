@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Sergey Guralnik
+ * Copyright 2021 Sergey Guralnik
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -24,14 +24,10 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-SECTIONS
-{
-    .txvc_driver :
-    {
-        /* Collect all driver instances into array and provide symbols to iterate over items */
-        PROVIDE_HIDDEN (__txvc_drivers_begin = .);
-        KEEP (*(.txvc_driver))
-        PROVIDE_HIDDEN (__txvc_drivers_end = .);
-    }
-}
-INSERT AFTER .rodata;
+#pragma once
+
+#include "txvc/driver.h"
+
+extern const struct txvc_driver* txvc_enumerate_drivers(
+        bool (*fn)(const struct txvc_driver *d, const void *extra), const void *extra);
+

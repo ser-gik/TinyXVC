@@ -25,15 +25,19 @@
  */
 
 #include "alias.h"
-#include "driver.h"
-#include "log.h"
-#include "server.h"
-#include "txvc_defs.h"
+#include "driver_wrapper.h"
+
+#include "txvc/driver.h"
+#include "txvc/log.h"
+#include "txvc/server.h"
+#include "txvc/profile.h"
+#include "txvc/defs.h"
+
+#include "drivers/drivers.h"
 
 #include <unistd.h>
 
 #include <limits.h>
-#include <string.h>
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
@@ -44,19 +48,24 @@
 TXVC_DEFAULT_LOG_TAG(txvc);
 
 #define DEFAULT_SERVER_ADDR "127.0.0.1:2542"
+#define DEFAULT_LOG_TAG_SPEC "all+"
 
 #define CLI_OPTION_LIST_ITEMS(OPT_FLAG, OPT)                                                       \
     OPT_FLAG("h", help, "Print this message")                                                      \
-    OPT_FLAG("v", verbose, "Enable verbose output")                                                \
     OPT("p", profile, "Server HW profile or profile alias",                                        \
             "profile_string_or_alias", const char *, optarg)                                       \
     OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
                          " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
             "ipv4_address:port", const char *, optarg)                                             \
-    OPT("t", initialTckPeriodNanos, "Initial TCK period, expressed in nanoseconds."                \
-                         " Can be used to enforce device to operate at specific rate if "          \
-                         " connected client doesn't set preferred value via \"settck\" command",   \
-            "initial_tck_period_ns", int, parse_int_option(optarg))                                \
+    OPT("t", tckPeriodNanos, "Enforced TCK period, expressed in nanoseconds.",                     \
+            "tck_period_ns", int, parse_int_option(optarg))                                        \
+    OPT_FLAG("v", verbose, "Enable verbose output")                                                \
+    OPT("l", logTagSpec, "Log tags to enable/disable."                                             \
+                         " A sequence of tags names where each name is followed by '+' to enable"  \
+                         " or '-' to disable it. Use 'all[+-]' to enable or disable all tags."     \
+                         " E.g. 'foo-all+bar-' enables all tags except for 'bar'."                 \
+                         " (default '" DEFAULT_LOG_TAG_SPEC "')",                                  \
+            "log_tag_specification", const char *, optarg)                                         \
 
 struct cli_options {
 #define AS_STRUCT_FIELD_FLAG(optChar, name, description) bool name;
@@ -67,6 +76,7 @@ struct cli_options {
 };
 
 static volatile sig_atomic_t shouldTerminate = 0;
+const char *txvcProgname;
 
 static void sigint_handler(int signo) {
     TXVC_UNUSED(signo);
@@ -77,21 +87,14 @@ static void sigint_handler(int signo) {
 
 static void listen_for_user_interrupt(void) {
     /*
-     * Received SIGINT must NOT restart interrupted syscalls, so that server code will be able
-     * to test termination flag in a timely manner.
+     * Received SIGINT must NOT restart interrupted syscalls, so that blocking I/O calls will
+     * return immediately to let test termination flag in a timely manner.
      * Don't use signal() as it may force restarts.
      */
     struct sigaction sa;
     sa.sa_flags = 0; /* No SA_RESTART here */
     sigemptyset(&sa.sa_mask);
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
-#endif
     sa.sa_handler = sigint_handler;
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
     sigaction(SIGINT, &sa, NULL);
 }
 
@@ -120,11 +123,11 @@ static void printUsage(const char *progname, bool detailed) {
     if (detailed) {
         printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n\n");
     }
-    printf("Usage: %s %s\n"
+    printf("Usage:\n\t%s %s\n"
            "%s\n",
            progname, synopsysOptions, usageOptions);
     if (detailed) {
-        printf("\tProfiles:\n");
+        printf("Profiles:\n");
         printf("HW profile is a specification that defines a backend to be used by server"
                " and its parameters. Backend here means a particular device that eventually"
                " receives and answers to XVC commands. HW profile is specified in the following"
@@ -132,10 +135,10 @@ static void printUsage(const char *progname, bool detailed) {
                "Available driver names as well as their specific parameters are listed below."
                " Also there are a few predefined profile aliases for specific HW that can be used"
                " instead of fully specified description, see below.\n\n");
-        printf("\tDrivers:\n");
+        printf("Drivers:\n");
         txvc_enumerate_drivers(driver_usage, NULL);
         printf("\n");
-        printf("\tAliases:\n");
+        printf("Aliases:\n");
         txvc_print_all_aliases();
         printf("\n");
     }
@@ -183,53 +186,8 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
     return strcmp(name, d->name) != 0;
 }
 
-static const struct txvc_driver *activate_driver(const char *profile) {
-    /*
-     * Copy the whole profile string in a temporary buffer and cut it onto name,value chuncks.
-     * Expected format is:
-     * <driver name>:<name0>=<val0>,<name1>=<val1>,<name2>=<val2>,...
-     */
-    char args[1024];
-    strncpy(args, profile, sizeof(args));
-    args[sizeof(args) - 1] = '\0';
-
-    const char *name = args;
-    const char *argNames[32] = { NULL };
-    const char *argValues[32] = { NULL };
-
-    char* cur = strchr(args, ':');
-    if (cur) {
-        *cur++ = '\0';
-        for (size_t i = 0; i < sizeof(argNames) / sizeof(argNames[0]) && cur && *cur; i++) {
-            char* tmp = cur;
-            cur = strchr(cur, ',');
-            if (cur) {
-                *cur++ = '\0';
-            }
-            argNames[i] = tmp;
-            tmp = strchr(tmp, '=');
-            if (tmp) {
-                *tmp++ = '\0';
-                argValues[i] = tmp;
-            } else {
-                argValues[i] = "";
-            }
-        }
-    }
-
-    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, name);
-    if (driver) {
-        if (!driver->activate(argNames, argValues)) {
-            ERROR("Failed to activate driver \"%s\"\n", name);
-            driver = NULL;
-        }
-    } else {
-        ERROR("Can not find driver \"%s\"\n", name);
-    }
-    return driver;
-}
-
 int main(int argc, char**argv) {
+    txvcProgname = argv[0];
     listen_for_user_interrupt();
 
     struct cli_options opts = { 0 };
@@ -238,7 +196,8 @@ int main(int argc, char**argv) {
         return EXIT_FAILURE;
     }
 
-    txvc_set_log_min_level(opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
+    txvc_log_configure(opts.logTagSpec ? opts.logTagSpec : DEFAULT_LOG_TAG_SPEC,
+                    opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
     if (opts.help) {
         printUsage(argv[0], true);
         return EXIT_SUCCESS;
@@ -246,28 +205,40 @@ int main(int argc, char**argv) {
     if (!opts.profile) {
         fprintf(stderr, "Profile is missing\n");
         return EXIT_FAILURE;
-    }
-    const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
-    if (alias) {
-        INFO("Found alias %s (%s),\n", opts.profile, alias->description);
-        INFO("using profile %s\n", alias->profile);
-        opts.profile = alias->profile;
+    } else {
+        const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
+        if (alias) {
+            INFO("Found alias %s (%s),\n", opts.profile, alias->description);
+            INFO("Using profile %s\n", alias->profile);
+            opts.profile = alias->profile;
+        }
     }
     if (!opts.serverAddr) {
         opts.serverAddr = DEFAULT_SERVER_ADDR;
     }
-    if (opts.initialTckPeriodNanos < 0) {
-        fprintf(stderr, "Bad initial TCK period\n");
+    if (opts.tckPeriodNanos < 0) {
+        fprintf(stderr, "Bad TCK period\n");
         return EXIT_FAILURE;
     }
-    const struct txvc_driver *driver = activate_driver(opts.profile);
+
+    struct txvc_backend_profile profile;
+    if (!txvc_backend_profile_parse(opts.profile, &profile)) {
+        return EXIT_FAILURE;
+    }
+
+    const struct txvc_driver *driver = txvc_enumerate_drivers(find_by_name, profile.driverName);
     if (!driver) {
+        ERROR("Can not find driver \"%s\"\n", profile.driverName);
         return EXIT_FAILURE;
     }
-    if (opts.initialTckPeriodNanos > 0
-            && driver->set_tck_period(opts.initialTckPeriodNanos) != opts.initialTckPeriodNanos) {
-        WARN("Can't set TCK period to %dns\n", opts.initialTckPeriodNanos);
+
+    if (!driver->activate(profile.numArg, profile.argKeys, profile.argValues)) {
+        ERROR("Failed to activate driver \"%s\"\n", profile.driverName);
+        return EXIT_FAILURE;
     }
+
+    txvc_driver_wrapper_setup(driver, opts.tckPeriodNanos);
+    driver = &txvcDriverWrapper;
 
     txvc_run_server(opts.serverAddr, driver, &shouldTerminate);
     driver->deactivate();

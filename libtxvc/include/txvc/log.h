@@ -26,68 +26,49 @@
 
 #pragma once
 
-#include "txvc_defs.h"
+#include "defs.h"
 
 #include <stdbool.h>
-
-struct txvc_log_tag {
-    char str[16];
-};
 
 enum txvc_log_level {
     LOG_LEVEL_VERBOSE = 0,
     LOG_LEVEL_INFO,
     LOG_LEVEL_WARN,
     LOG_LEVEL_ERROR,
+    LOG_LEVEL_FATAL,
 };
 
-extern void txvc_set_log_min_level(enum txvc_log_level level);
+extern void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel);
 
 extern bool txvc_log_level_enabled(enum txvc_log_level level);
 
-TXVC_PRINTF_LIKE(3, 4)
-extern void txvc_log(const struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...);
+struct txvc_log_tag {
+    char str[16];
+    bool (*isEnabled)(struct txvc_log_tag* tag);
+    unsigned curConfigId;
+};
 
-#define TXVC_TAG_PADDED__(tag) \
-    ("\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20" #tag)
-
-#define TXVC_TAG_CHAR_INIT__(idx, tag) \
-        [idx] = TXVC_TAG_PADDED__(tag)[sizeof(TXVC_TAG_PADDED__(tag)) - 2 - 15 + (idx)]
-
-#define TXVC_DEFAULT_LOG_TAG(tag) \
-    static const struct txvc_log_tag txvc_default_log_tag = { \
-        .str = { \
-            TXVC_TAG_CHAR_INIT__(0, tag), \
-            TXVC_TAG_CHAR_INIT__(1, tag), \
-            TXVC_TAG_CHAR_INIT__(2, tag), \
-            TXVC_TAG_CHAR_INIT__(3, tag), \
-            TXVC_TAG_CHAR_INIT__(4, tag), \
-            TXVC_TAG_CHAR_INIT__(5, tag), \
-            TXVC_TAG_CHAR_INIT__(6, tag), \
-            TXVC_TAG_CHAR_INIT__(7, tag), \
-            TXVC_TAG_CHAR_INIT__(8, tag), \
-            TXVC_TAG_CHAR_INIT__(9, tag), \
-            TXVC_TAG_CHAR_INIT__(10, tag), \
-            TXVC_TAG_CHAR_INIT__(11, tag), \
-            TXVC_TAG_CHAR_INIT__(12, tag), \
-            TXVC_TAG_CHAR_INIT__(13, tag), \
-            TXVC_TAG_CHAR_INIT__(14, tag), \
-            TXVC_TAG_CHAR_INIT__(15, tag), \
-        }, \
+#define TXVC_LOG_TAG_INITIALIZER(tag) {                                                            \
+        .str = #tag,                                                                               \
+        .isEnabled = txvc_log_tag_enabled,                                                         \
+        .curConfigId = 0u,                                                                         \
     }
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
-#endif
+#define TXVC_DEFAULT_LOG_TAG(tag)                                                                  \
+    static struct txvc_log_tag txvc_default_log_tag = TXVC_LOG_TAG_INITIALIZER(tag)
+
+extern bool txvc_log_tag_enabled(struct txvc_log_tag *tag);
+
+TXVC_PRINTF_LIKE(3, 4)
+extern void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const char *fmt, ...);
 
 #define VERBOSE_ENABLED txvc_log_level_enabled(LOG_LEVEL_VERBOSE)
 #define VERBOSE(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_VERBOSE, (fmt), ## __VA_ARGS__)
 #define INFO(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_INFO, (fmt), ## __VA_ARGS__)
 #define WARN(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_WARN, (fmt), ## __VA_ARGS__)
 #define ERROR(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_ERROR, (fmt), ## __VA_ARGS__)
+#define FATAL(fmt, ...) txvc_log(&txvc_default_log_tag, LOG_LEVEL_FATAL, (fmt), ## __VA_ARGS__)
 
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+#define ALWAYS_ASSERT(cond) \
+    do { if (!(cond)) FATAL("Violated condition: \"%s\"\n", #cond); } while (0)
 

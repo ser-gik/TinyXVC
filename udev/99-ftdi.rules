@@ -1,0 +1,2 @@
+# FTDI FT232H chip
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", TAG+="uaccess", GROUP="plugdev"

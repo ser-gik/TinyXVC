@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 Sergey Guralnik
+ * Copyright 2021 Sergey Guralnik
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -24,45 +24,19 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "driver.h"
-#include "txvc_defs.h"
+#pragma once
 
-#include <stddef.h>
-#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
-static bool activate(const char **argNames, const char **argValues){
-    TXVC_UNUSED(argNames);
-    TXVC_UNUSED(argValues);
-    return true;
-}
+#include "defs.h"
 
-static bool deactivate(void){
-    return true;
-}
+extern void txvc_bit_vector_random(uint8_t* out, int outSz);
 
-static int max_vector_bits(void){
-    return 1024;
-}
+extern bool txvc_bit_vector_equal(
+        const uint8_t* lhs, int lhsStart, int lhsEnd,
+        const uint8_t* rhs, int rhsStart, int rhsEnd);
 
-static int set_tck_period(int tckPeriodNs){
-    return tckPeriodNs;
-}
-
-static bool shift_bits(int numBits, const uint8_t *tmsVector, const uint8_t *tdiVector,
-        uint8_t *tdoVector){
-    TXVC_UNUSED(tmsVector);
-    memcpy(tdoVector, tdiVector, (size_t) (numBits / 8 + !!(numBits % 8)));
-    return true;
-}
-
-TXVC_DRIVER(echo) = {
-    .name = "echo",
-    .help = "Simple loopback driver that forwards TDI vector to TDO. No real device is involved\n"
-            "Parameters:\n   none\n",
-    .activate = activate,
-    .deactivate = deactivate,
-    .max_vector_bits = max_vector_bits,
-    .set_tck_period = set_tck_period,
-    .shift_bits = shift_bits,
-};
+extern int txvc_bit_vector_format_lsb(char* out, int outSz, const uint8_t* vector, int start, int end);
+extern int txvc_bit_vector_format_msb(char* out, int outSz, const uint8_t* vector, int start, int end);
 
