@@ -52,16 +52,14 @@ TXVC_DEFAULT_LOG_TAG(txvc);
 
 #define CLI_OPTION_LIST_ITEMS(OPT_FLAG, OPT)                                                       \
     OPT_FLAG("h", help, "Print this message")                                                      \
-    OPT_FLAG("v", verbose, "Enable verbose output")                                                \
     OPT("p", profile, "Server HW profile or profile alias",                                        \
             "profile_string_or_alias", const char *, optarg)                                       \
     OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
                          " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
             "ipv4_address:port", const char *, optarg)                                             \
-    OPT("t", tckPeriodNanos, "Forced TCK period, expressed in nanoseconds."                        \
-                         " Can be used to enforce device to operate at specific rate if "          \
-                         " connected client doesn't set preferred value via \"settck\" command",   \
-            "initial_tck_period_ns", int, parse_int_option(optarg))                                \
+    OPT("t", tckPeriodNanos, "Enforced TCK period, expressed in nanoseconds.",                     \
+            "tck_period_ns", int, parse_int_option(optarg))                                        \
+    OPT_FLAG("v", verbose, "Enable verbose output")                                                \
     OPT("l", logTagSpec, "Log tags to enable/disable."                                             \
                          " A sequence of tags names where each name is followed by '+' to enable"  \
                          " or '-' to disable it. Use 'all[+-]' to enable or disable all tags."     \
@@ -125,11 +123,11 @@ static void printUsage(const char *progname, bool detailed) {
     if (detailed) {
         printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n\n");
     }
-    printf("Usage: %s %s\n"
+    printf("Usage:\n\t%s %s\n"
            "%s\n",
            progname, synopsysOptions, usageOptions);
     if (detailed) {
-        printf("\tProfiles:\n");
+        printf("Profiles:\n");
         printf("HW profile is a specification that defines a backend to be used by server"
                " and its parameters. Backend here means a particular device that eventually"
                " receives and answers to XVC commands. HW profile is specified in the following"
@@ -137,10 +135,10 @@ static void printUsage(const char *progname, bool detailed) {
                "Available driver names as well as their specific parameters are listed below."
                " Also there are a few predefined profile aliases for specific HW that can be used"
                " instead of fully specified description, see below.\n\n");
-        printf("\tDrivers:\n");
+        printf("Drivers:\n");
         txvc_enumerate_drivers(driver_usage, NULL);
         printf("\n");
-        printf("\tAliases:\n");
+        printf("Aliases:\n");
         txvc_print_all_aliases();
         printf("\n");
     }
