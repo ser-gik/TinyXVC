@@ -5,6 +5,7 @@ jobs:
       - image: cimg/base:2021.05
     steps:
       - checkout
+      - run: sudo apt update
       - run:
           command: sudo apt install build-essential cmake libftdi1-dev
       - run:
