@@ -1,6 +1,8 @@
 
 # TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server
 
+[![CircleCI](https://circleci.com/gh/ser-gik/TinyXVC/tree/master.svg?style=shield)](https://circleci.com/gh/ser-gik/TinyXVC/tree/master)
+
 ## Purpose
 
 TinyXVC allows you to connect Xilinx FPGAs to a Vivado or ISE without using
