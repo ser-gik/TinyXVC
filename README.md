@@ -10,14 +10,26 @@ Instead it provides a ["virtual cable"](https://github.com/Xilinx/XilinxVirtualC
 on top of an affordable FTDI chip that connects FPGA' JTAG TAP pins to your computer USB. This is the only
 additional hardware that one needs to start! Just use any of a myriad of breakout boards or
 cables that feature MPSSE-capable FTDI chip (already tested with FT232H, FT2232H):
-    - connect breakout board/cable to your PC USB
-    - connect JTAG pins (TCK, TMS, TDI, TDO) of FTDI chip to JTAG TAP of your FPGA (ensure first
+
+- connect breakout board/cable to your PC USB
+- connect JTAG pins (TCK, TMS, TDI, TDO) of FTDI chip to JTAG TAP of your FPGA (ensure first
+
 that it tolerates 3.3V IO levels from FTDI, otherwise you may need a shifter) 
+
+## How Fast Is It?
+
+On Ubuntu 20.04.1 LTS, Intel® Core™ i7-8550U CPU @ 1.80GHz × 8 host, using 100ns TCK period:
+
+- to program configuration memory for Spartan 6 XC6SLX9 (via iMPACT) - instant (less than 2 sec)
+- to program configuration memory for Artix 7 XC77A50T (via Vivado) - ~4.5 sec 
+- to program QSPI flash [indirectly](https://www.xilinx.com/support/documentation/application_notes/xapp586-spi-flash.pdf) for Artix 7 XC77A50T (via Vivado) - ~125 sec 
+
+(Indeed numbers depend mostly on TCK period, dev machine CPU speed is way less important.)
 
 ## How To Use?
 
-Once FPGA is connected to a PC via appropriate cable or dongle, start `txvc` with an appropriate
-options. Assuming we have FT232H cable it can be as a simple as:
+Once FPGA is connected to a PC via appropriate cable or dongle, start `txvc` with a proper
+options. Assuming we use FT232H cable to talk to FPGA, it can be as a simple as:
 ```
 $ txvc -p ft232h
       3341:            txvc: I: Found alias ft232h (FT232H-based USB to JTAG cable),
@@ -29,11 +41,11 @@ $ txvc -p ft232h
 
 When it is listening for client to connect - open Vivado' Hardware Manager and via "Open target"
 connect to a virtual cable at address that is shown in `txvc` log. If using ISE - launch iMPACT
-and via "Cable setup..." choose "Cable Plug-in" with next configuration:
+and via "Cable setup..." choose "Cable Plug-in" with the next configuration:
 ```
 xilinx_xvc host=127.0.0.1:2542 disableversioncheck=true
 ```
-That's it!
+That's it, now try to upload your designs to an FPGA!
 
 To get more info about available options:
 ```
@@ -44,8 +56,10 @@ $ txvc -h
 Currently `txvc` supports only MPSSE-capable FTDI chips as an intermediate between FPGA and dev
 machine, though other "backends" can be added easily.
 Supported and tested chips are:
-    - FT232H
-    - FT2232H
+
+- FT232H
+- FT2232H
+
 Other models should also work but were not tested.
 
 ## How To Build?
