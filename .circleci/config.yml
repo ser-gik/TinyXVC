@@ -1,0 +1,17 @@
+version: 2.1
+jobs:
+  build-and-test:
+    docker:
+      - image: cimg/base:2021.05
+    steps:
+      - checkout
+      - run: cc --version
+      - run: make --version
+      - run: cmake --version
+
+workflows:
+ version: 2
+ regular:
+   jobs:
+     - build-and-test
+
