@@ -58,6 +58,7 @@ static const char *gDefaultColorEscape = "";
 static long long gOriginUs;
 static char *gTagSpec;
 static unsigned gCurConfigId = 0u;
+static bool gWithTimestamps = false;
 
 static long long getTimeUs(void) {
     struct timespec ts;
@@ -90,11 +91,13 @@ static bool tag_disabled(struct txvc_log_tag *tag) {
     return false;
 }
 
-void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel) {
+void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel,
+        bool withTimestamps) {
     if (gTagSpec) free(gTagSpec);
     gTagSpec = strdup(tagSpec);
     gMinLevel = minLevel;
     gCurConfigId++;
+    gWithTimestamps = withTimestamps;
 }
 
 bool txvc_log_tag_enabled(struct txvc_log_tag *tag) {
@@ -154,10 +157,16 @@ void txvc_log(struct txvc_log_tag *tag, enum txvc_log_level level, const char *f
     char buf[1024];
     char* head = buf;
     size_t avail = sizeof(buf);
-    int prefixLen = snprintf(head, avail, "%10lld: %15s: %c: ", getTimeUs() - gOriginUs,
-                                                                    tag->str, gLevelNames[level]);
+
+    if (gWithTimestamps) {
+        int prefixLen = snprintf(head, avail, "%10lld:", getTimeUs() - gOriginUs);
+        head += prefixLen;
+        avail -= prefixLen;
+    }
+    int prefixLen = snprintf(head, avail, "%15s: %c: ", tag->str, gLevelNames[level]);
     head += prefixLen;
     avail -= prefixLen;
+
     vsnprintf(head, avail, fmt, ap);
     va_end(ap);
 

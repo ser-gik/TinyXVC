@@ -51,26 +51,43 @@ TXVC_DEFAULT_LOG_TAG(txvc);
 #define DEFAULT_LOG_TAG_SPEC "all+"
 
 #define CLI_OPTION_LIST_ITEMS(OPT_FLAG, OPT)                                                       \
-    OPT_FLAG("h", help, "Print this message")                                                      \
-    OPT("p", profile, "Server HW profile or profile alias",                                        \
-            "profile_string_or_alias", const char *, optarg)                                       \
+    OPT_FLAG("h", help, "Print this message.")                                                     \
+    OPT("p", profile, "Hardware profile or profile alias."                                         \
+            " HW profile is a specification that defines a \"backend\" to be used to communicate"  \
+            " with FPGA and its parameters. HW profile is specified in the following"              \
+            " form:\n\n\t<driver_name>:<arg0>=<val0>,<arg1>=<val1>,<arg2>=<val2>,...\n\n"          \
+            "Use '-D' to see available driver names as well as their specific parameters."         \
+            " Also there are a few predefined profile aliases for specific HW that can be used"    \
+            " instead of fully specified descriptions, use '-A' to see available aliases.",        \
+            "profile_spec_or_alias", const char *, optarg, NULL)                                   \
     OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
-                         " XVC connections at (default: " DEFAULT_SERVER_ADDR ")",                 \
-            "ipv4_address:port", const char *, optarg)                                             \
+                         " XVC connections at (default: " DEFAULT_SERVER_ADDR ").",                \
+            "ipv4_address:port", const char *, optarg, DEFAULT_SERVER_ADDR)                        \
     OPT("t", tckPeriodNanos, "Enforced TCK period, expressed in nanoseconds.",                     \
-            "tck_period_ns", int, parse_int_option(optarg))                                        \
-    OPT_FLAG("v", verbose, "Enable verbose output")                                                \
-    OPT("l", logTagSpec, "Log tags to enable/disable."                                             \
-                         " A sequence of tags names where each name is followed by '+' to enable"  \
-                         " or '-' to disable it. Use 'all[+-]' to enable or disable all tags."     \
-                         " E.g. 'foo-all+bar-' enables all tags except for 'bar'."                 \
-                         " (default '" DEFAULT_LOG_TAG_SPEC "')",                                  \
-            "log_tag_specification", const char *, optarg)                                         \
+            "tck_period_ns", int, parse_int(optarg), 0)                                            \
+    OPT_FLAG("D", helpDrivers, "Print available drivers.")                                         \
+    OPT_FLAG("A", helpAliases, "Print available aliases.")                                         \
 
-struct cli_options {
+#define ENV_LIST_ITEMS(ENV_FLAG, ENV)                                                              \
+    ENV_FLAG("TXVC_LOG_VERBOSE", logVerbose, "Enable verbose logging")                             \
+    ENV_FLAG("TXVC_LOG_TIMESTAMPS", logTimestamps, "Prefix logs with timestamp")                   \
+    ENV("TXVC_LOG_SPEC", logTagSpec, "Log tags to enable/disable."                                 \
+             " A sequence of tags names where each name is followed by '+' to enable"              \
+             " or '-' to disable it. Use 'all[+-]' to enable or disable all tags."                 \
+             " E.g. 'foo-all+bar-' enables all tags except for 'bar'."                             \
+             " (default '" DEFAULT_LOG_TAG_SPEC "')",                                              \
+             const char *, envVal, DEFAULT_LOG_TAG_SPEC)                                           \
+
+struct config {
 #define AS_STRUCT_FIELD_FLAG(optChar, name, description) bool name;
-#define AS_STRUCT_FIELD(optChar, name, description, optArg, type, initializer) type name;
+#define AS_STRUCT_FIELD(optChar, name, description, optArg, type, initializer, defVal) type name;
     CLI_OPTION_LIST_ITEMS(AS_STRUCT_FIELD_FLAG, AS_STRUCT_FIELD)
+#undef AS_STRUCT_FIELD_FLAG
+#undef AS_STRUCT_FIELD
+
+#define AS_STRUCT_FIELD_FLAG(envName, name, description) bool name;
+#define AS_STRUCT_FIELD(envName, name, description, type, initializer, defVal) type name;
+    ENV_LIST_ITEMS(AS_STRUCT_FIELD_FLAG, AS_STRUCT_FIELD)
 #undef AS_STRUCT_FIELD_FLAG
 #undef AS_STRUCT_FIELD
 };
@@ -104,56 +121,75 @@ static bool driver_usage(const struct txvc_driver *d, const void *extra) {
     return true;
 }
 
-static void printUsage(const char *progname, bool detailed) {
+static bool print_help(const char *progname, const struct config *config) {
+    bool didPrint = false;
+    if (config->help) {
 #define AS_SYNOPSYS_ENTRY_FLAG(optChar, name, description)                                         \
-    "[-" optChar "]"
-#define AS_SYNOPSYS_ENTRY(optChar, name, description, optArg, type, initializer)                   \
-    "[-" optChar " <" optArg ">]"
-    const char *synopsysOptions = CLI_OPTION_LIST_ITEMS(AS_SYNOPSYS_ENTRY_FLAG, AS_SYNOPSYS_ENTRY);
+        "[-" optChar "]"
+#define AS_SYNOPSYS_ENTRY(optChar, name, description, optArg, type, initializer, defVal)           \
+        "[-" optChar " <" optArg ">]"
+        const char *optionsSynopsys =
+            CLI_OPTION_LIST_ITEMS(AS_SYNOPSYS_ENTRY_FLAG, AS_SYNOPSYS_ENTRY);
 #undef AS_SYNOPSYS_ENTRY_FLAG
 #undef AS_SYNOPSYS_ENTRY
 #define AS_USAGE_ENTRY_FLAG(optChar, name, description)                                            \
-    " -" optChar " : " description "\n"
-#define AS_USAGE_ENTRY(optChar, name, description, optArg, type, initializer)                      \
-    " -" optChar " : " description "\n"
-    const char *usageOptions = CLI_OPTION_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
+        " -" optChar " : " description "\n"
+#define AS_USAGE_ENTRY(optChar, name, description, optArg, type, initializer, defVal)              \
+        " -" optChar " : " description "\n"
+        const char *optionsUsage = CLI_OPTION_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
 #undef AS_USAGE_ENTRY_FLAG
 #undef AS_USAGE_ENTRY
 
-    if (detailed) {
-        printf("TinyXVC - %s, v%s\n\n", TXVC_DESCRIPTION, TXVC_VERSION);
+        printf("%s - %s, v%s\n\n"
+               "Usage:\n"
+               "\t%s %s\n"
+               "\n%s\n",
+               TXVC_PROJECT_NAME, TXVC_DESCRIPTION, TXVC_VERSION,
+               progname, optionsSynopsys,
+               optionsUsage);
+
+#define AS_USAGE_ENTRY_FLAG(envName, name, description)                                            \
+        envName " - " description " (non-zero to activate)\n"
+#define AS_USAGE_ENTRY(envName, name, description, type, initializer, defVal)                      \
+        envName " - " description "\n"
+        const char *usageEnvVars = ENV_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
+#undef AS_USAGE_ENTRY_FLAG
+#undef AS_USAGE_ENTRY
+        printf("Environment variables:\n%s\n", usageEnvVars);
+        didPrint = true;
     }
-    printf("Usage:\n\t%s %s\n"
-           "%s\n",
-           progname, synopsysOptions, usageOptions);
-    if (detailed) {
-        printf("Profiles:\n");
-        printf("HW profile is a specification that defines a backend to be used by server"
-               " and its parameters. Backend here means a particular device that eventually"
-               " receives and answers to XVC commands. HW profile is specified in the following"
-               " form:\n\n\t<driver_name>:<arg0>=<val0>,<arg1>=<val1>,<arg2>=<val2>,...\n\n"
-               "Available driver names as well as their specific parameters are listed below."
-               " Also there are a few predefined profile aliases for specific HW that can be used"
-               " instead of fully specified description, see below.\n\n");
+    if (config->helpDrivers) {
         printf("Drivers:\n");
         txvc_enumerate_drivers(driver_usage, NULL);
         printf("\n");
+        didPrint = true;
+    }
+    if (config->helpAliases) {
         printf("Aliases:\n");
         txvc_print_all_aliases();
         printf("\n");
+        didPrint = true;
     }
+    return didPrint;
 }
 
-static int parse_int_option(const char* optArg) {
+static int parse_int(const char* s) {
     char *p;
-    int res = strtol(optArg, &p, 0);
-    return *optArg == '\0' || *p != '\0' ? INT_MIN : res;
+    int res = strtol(s, &p, 0);
+    return *s == '\0' || *p != '\0' ? INT_MIN : res;
 }
 
-static bool parse_cli_options(int argc, char **argv, struct cli_options *out) {
-    memset(out, 0, sizeof(*out));
+static bool load_config(int argc, char **argv, struct config *out) {
+#define APPLY_DEFAULTS_FLAG(optChar, name, description)                                            \
+    out->name = false;
+#define APPLY_DEFAULTS(optChar, name, description, optArg, type, initializer, defVal)              \
+    out->name = defVal;
+    CLI_OPTION_LIST_ITEMS(APPLY_DEFAULTS_FLAG, APPLY_DEFAULTS)
+#undef APPLY_DEFAULTS_FLAG
+#undef APPLY_DEFAULTS
+
 #define AS_OPTSTR_FLAG(optChar, name, description) optChar
-#define AS_OPTSTR(optChar, name, description, optArg, type, initializer) optChar ":"
+#define AS_OPTSTR(optChar, name, description, optArg, type, initializer, defVal) optChar ":"
     const char *optstr = CLI_OPTION_LIST_ITEMS(AS_OPTSTR_FLAG, AS_OPTSTR);
 #undef AS_OPTSTR_FLAG
 #undef AS_OPTSTR
@@ -164,7 +200,7 @@ static bool parse_cli_options(int argc, char **argv, struct cli_options *out) {
             out->name = true;                                                                      \
             continue;                                                                              \
         }
-#define APPLY_OPTION(optChar, name, description, optArg, type, initializer)                        \
+#define APPLY_OPTION(optChar, name, description, optArg, type, initializer, defVal)                \
         if (opt == optChar[0]) {                                                                   \
             out->name = initializer;                                                               \
             continue;                                                                              \
@@ -177,8 +213,20 @@ static bool parse_cli_options(int argc, char **argv, struct cli_options *out) {
 
     if (argv[optind] != NULL) {
         fprintf(stderr, "%s: unrecognized extra operands\n", argv[0]);
+        return false;
     }
-    return argv[optind] == NULL;
+
+#define READ_ENV_VAR(envName, name, description, type, initializer, defVal)                        \
+    do {                                                                                           \
+        const char *envVal = getenv(envName);                                                      \
+        out->name = envVal ? (initializer) : defVal;                                               \
+    } while (0);
+#define READ_ENV_FLAG(envName, name, description)                                                  \
+        READ_ENV_VAR(envName, name, description, bool, parse_int(envVal) != 0, false)
+    ENV_LIST_ITEMS(READ_ENV_FLAG, READ_ENV_VAR)
+#undef READ_ENV_VAR
+#undef READ_ENV_FLAG
+    return true;
 }
 
 static bool find_by_name(const struct txvc_driver *d, const void *extra) {
@@ -188,41 +236,49 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
 
 int main(int argc, char**argv) {
     txvcProgname = argv[0];
-    listen_for_user_interrupt();
 
-    struct cli_options opts = { 0 };
-    if (!parse_cli_options(argc, argv, &opts)) {
-        printUsage(argv[0], false);
+    if (getuid() == 0 || geteuid() == 0) {
+        /* We do not need any superpowers and do not want to harm user machine in there is some
+         * unfortunate bug. This only covers the most probable case - running via sudo or
+         * from root shell.
+         */
+        fprintf(stderr, "%s: refuse to run as superuser\n", txvcProgname);
         return EXIT_FAILURE;
     }
 
-    txvc_log_configure(opts.logTagSpec ? opts.logTagSpec : DEFAULT_LOG_TAG_SPEC,
-                    opts.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
-    if (opts.help) {
-        printUsage(argv[0], true);
+    listen_for_user_interrupt();
+
+    struct config config = { 0 };
+    if (!load_config(argc, argv, &config)) {
+        print_help(argv[0], &(struct config) { .help = true, });
+        return EXIT_FAILURE;
+    }
+
+    if (print_help(argv[0], &config)) {
         return EXIT_SUCCESS;
     }
-    if (!opts.profile) {
+
+    txvc_log_configure(config.logTagSpec,
+            config.logVerbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO,
+            config.logTimestamps);
+    if (!config.profile) {
         fprintf(stderr, "Profile is missing\n");
         return EXIT_FAILURE;
     } else {
-        const struct txvc_profile_alias *alias = txvc_find_alias_by_name(opts.profile);
+        const struct txvc_profile_alias *alias = txvc_find_alias_by_name(config.profile);
         if (alias) {
-            INFO("Found alias %s (%s),\n", opts.profile, alias->description);
+            INFO("Found alias %s (%s),\n", config.profile, alias->description);
             INFO("Using profile %s\n", alias->profile);
-            opts.profile = alias->profile;
+            config.profile = alias->profile;
         }
     }
-    if (!opts.serverAddr) {
-        opts.serverAddr = DEFAULT_SERVER_ADDR;
-    }
-    if (opts.tckPeriodNanos < 0) {
+    if (config.tckPeriodNanos < 0) {
         fprintf(stderr, "Bad TCK period\n");
         return EXIT_FAILURE;
     }
 
     struct txvc_backend_profile profile;
-    if (!txvc_backend_profile_parse(opts.profile, &profile)) {
+    if (!txvc_backend_profile_parse(config.profile, &profile)) {
         return EXIT_FAILURE;
     }
 
@@ -237,10 +293,10 @@ int main(int argc, char**argv) {
         return EXIT_FAILURE;
     }
 
-    txvc_driver_wrapper_setup(driver, opts.tckPeriodNanos);
+    txvc_driver_wrapper_setup(driver, config.tckPeriodNanos);
     driver = &txvcDriverWrapper;
 
-    txvc_run_server(opts.serverAddr, driver, &shouldTerminate);
+    txvc_run_server(config.serverAddr, driver, &shouldTerminate);
     driver->deactivate();
     return EXIT_SUCCESS;
 }

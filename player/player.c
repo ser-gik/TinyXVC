@@ -58,7 +58,7 @@ static bool noop_splitter_callback(const struct txvc_jtag_split_event *event, vo
 int main(int argc, const char **argv) {
     TXVC_UNUSED(argc);
     TXVC_UNUSED(argv);
-    txvc_log_configure("all+", LOG_LEVEL_VERBOSE);
+    txvc_log_configure("all+", LOG_LEVEL_VERBOSE, false);
 
     const char *jtagRawSaplesFile = argv[1];
     //const size_t bytesPerSample = 1;

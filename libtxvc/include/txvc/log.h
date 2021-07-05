@@ -38,7 +38,8 @@ enum txvc_log_level {
     LOG_LEVEL_FATAL,
 };
 
-extern void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel);
+extern void txvc_log_configure(const char *tagSpec, enum txvc_log_level minLevel,
+        bool withTimestamps);
 
 extern bool txvc_log_level_enabled(enum txvc_log_level level);
 

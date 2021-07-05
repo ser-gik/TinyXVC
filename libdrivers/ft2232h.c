@@ -295,6 +295,7 @@ static bool do_shift_bits(struct driver *d, int numBits, const uint8_t *tmsVecto
 }
 
 static bool activate(int numArg, const char **argNames, const char **argValues){
+    WARN("This driver is deprecated, consider using ftdi-generic instead\n");
     struct driver *d = &gFtdi;
 
     if (!load_config(numArg, argNames, argValues, &d->params)) return false;

@@ -1,12 +1,11 @@
 cmake_minimum_required(VERSION 3.13)
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_LIST_DIR}/.revision_change_marker)
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 
 include(TxvcGit)
-include(Txvc)
-
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    ${CMAKE_CURRENT_LIST_DIR}/.revision_change_marker)
 
 get_txvc_version_from_git(TXVC_VERSION TXVC_VERSION_SHORT)
 
@@ -15,6 +14,8 @@ project(TinyXVC
     DESCRIPTION "Virtual cable server for Xilinx FPGAs"
     HOMEPAGE_URL "https://github.com/ser-gik/TinyXVC"
     LANGUAGES C)
+
+include(Txvc)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
