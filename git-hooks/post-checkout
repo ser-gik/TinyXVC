@@ -1,0 +1,3 @@
+#!/bin/sh
+
+touch .revision_change_marker

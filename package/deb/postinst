@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+if command -v udevadm > /dev/null 2>&1
+then
+    echo Applying txvc udev rules ...
+    udevadm control --reload
+else
+    echo Udev rules were not applied. Install udevadm and reload rules manually.
+fi
+
