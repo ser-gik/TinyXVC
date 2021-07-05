@@ -333,7 +333,7 @@ static bool ft_buffer_append(struct ft_buffer *b, const uint8_t *txData, int txN
         }
         if (observer) {
             struct rx_observer_node *node =
-                txvc_mempool_alloc_object(&b->pool, struct rx_observer_node); 
+                txvc_mempool_alloc_object(&b->pool, struct rx_observer_node);
             node->next = NULL;
             node->fn = observer;
             node->data = b->rxBuffer + b->rxNumBytes;
