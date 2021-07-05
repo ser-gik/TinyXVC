@@ -23,6 +23,8 @@ jobs:
       - run:
           working_directory: build
           command: txvc -h
+      - store_artifacts:
+          path: build/`cat deb-package-name`
 
 workflows:
  version: 2
