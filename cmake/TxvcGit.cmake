@@ -1,6 +1,13 @@
 
+# Ensure Git hooks are always installed
 execute_process(COMMAND git config core.hooksPath ${CMAKE_CURRENT_LIST_DIR}/../git-hooks)
 
+#
+# Reads project version based on the nearest Git tag.
+# Tags must be in the following format:
+#
+# v<major>.<minor>.<patch>
+#
 function(get_txvc_version_from_git project_version_var project_version_short_var)
     execute_process(COMMAND git describe --tags --dirty
         OUTPUT_VARIABLE description
