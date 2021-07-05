@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 
+
 project(TinyXVC
     VERSION 1.0.0
     DESCRIPTION "Virtual cable server for Xilinx FPGAs"
