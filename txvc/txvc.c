@@ -69,7 +69,8 @@ TXVC_DEFAULT_LOG_TAG(txvc);
     OPT_FLAG("A", helpAliases, "Print available aliases.")                                         \
 
 #define ENV_LIST_ITEMS(ENV_FLAG, ENV)                                                              \
-    ENV_FLAG("TXVC_LOG_VERBOSE", verbose, "Enable verbose logging")                                \
+    ENV_FLAG("TXVC_LOG_VERBOSE", logVerbose, "Enable verbose logging")                             \
+    ENV_FLAG("TXVC_LOG_TIMESTAMPS", logTimestamps, "Prefix logs with timestamp")                   \
     ENV("TXVC_LOG_SPEC", logTagSpec, "Log tags to enable/disable."                                 \
              " A sequence of tags names where each name is followed by '+' to enable"              \
              " or '-' to disable it. Use 'all[+-]' to enable or disable all tags."                 \
@@ -247,7 +248,9 @@ int main(int argc, char**argv) {
         return EXIT_SUCCESS;
     }
 
-    txvc_log_configure(config.logTagSpec, config.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
+    txvc_log_configure(config.logTagSpec,
+            config.logVerbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO,
+            config.logTimestamps);
     if (!config.profile) {
         fprintf(stderr, "Profile is missing\n");
         return EXIT_FAILURE;
