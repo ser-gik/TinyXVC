@@ -25,15 +25,15 @@
  */
 
 #include "alias.h"
+#include "config/txvc.h"
 #include "driver_wrapper.h"
 
+#include "drivers/drivers.h"
 #include "txvc/driver.h"
 #include "txvc/log.h"
 #include "txvc/server.h"
 #include "txvc/profile.h"
 #include "txvc/defs.h"
-
-#include "drivers/drivers.h"
 
 #include <unistd.h>
 
@@ -121,7 +121,7 @@ static void printUsage(const char *progname, bool detailed) {
 #undef AS_USAGE_ENTRY
 
     if (detailed) {
-        printf("TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server, v0.0\n\n");
+        printf("TinyXVC - %s, v%s\n\n", TXVC_DESCRIPTION, TXVC_VERSION);
     }
     printf("Usage:\n\t%s %s\n"
            "%s\n",

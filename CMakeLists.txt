@@ -1,10 +1,20 @@
 cmake_minimum_required(VERSION 3.13)
 
-project(TinyXVC C)
+project(TinyXVC
+    VERSION 1.0.0
+    DESCRIPTION "Virtual cable server for Xilinx FPGAs"
+    HOMEPAGE_URL "https://github.com/ser-gik/TinyXVC"
+    LANGUAGES C)
+
+execute_process(COMMAND git rev-parse --short HEAD
+    OUTPUT_VARIABLE TXVC_GIT_REVISION
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+set(TXVC_VERSION_COMBINED ${CMAKE_PROJECT_VERSION}-${TXVC_GIT_REVISION})
 
 option(TXVC_ENABLE_GPROF "Enable gprof intstrumentation for executables" OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -67,4 +77,6 @@ add_subdirectory(txvc)
 add_subdirectory(libtinytest)
 add_subdirectory(tests)
 add_subdirectory(player)
+
+add_subdirectory(package)
 
