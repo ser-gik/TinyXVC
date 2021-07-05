@@ -8,23 +8,22 @@ include(TxvcGit)
 
 
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_LIST_DIR}/.revision_change_marker)
+
+
+
+
+get_txvc_version_from_git(TXVC_VERSION TXVC_VERSION_SHORT)
 
 
 
 
 project(TinyXVC
-    VERSION 1.0.0
+    VERSION ${TXVC_VERSION_SHORT}
     DESCRIPTION "Virtual cable server for Xilinx FPGAs"
     HOMEPAGE_URL "https://github.com/ser-gik/TinyXVC"
     LANGUAGES C)
-
-execute_process(COMMAND git rev-parse --short HEAD
-    OUTPUT_VARIABLE TXVC_GIT_REVISION
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
-set(TXVC_VERSION_COMBINED ${CMAKE_PROJECT_VERSION}-${TXVC_GIT_REVISION})
-
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/.git/index)
-
 
 
 
