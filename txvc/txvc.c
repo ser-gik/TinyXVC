@@ -236,6 +236,16 @@ static bool find_by_name(const struct txvc_driver *d, const void *extra) {
 
 int main(int argc, char**argv) {
     txvcProgname = argv[0];
+
+    if (getuid() == 0 || geteuid() == 0) {
+        /* We do not need any superpowers and do not want to harm user machine in there is some
+         * unfortunate bug. This only covers the most probable case - running via sudo or
+         * from root shell.
+         */
+        fprintf(stderr, "%s: refuse to run as superuser\n", txvcProgname);
+        return EXIT_FAILURE;
+    }
+
     listen_for_user_interrupt();
 
     struct config config = { 0 };
