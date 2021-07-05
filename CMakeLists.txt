@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.13)
 
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
+
+include(TxvcGit)
+
+
+
+
+
+
+
+
+
 project(TinyXVC
     VERSION 1.0.0
     DESCRIPTION "Virtual cable server for Xilinx FPGAs"
@@ -10,6 +22,11 @@ execute_process(COMMAND git rev-parse --short HEAD
     OUTPUT_VARIABLE TXVC_GIT_REVISION
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 set(TXVC_VERSION_COMBINED ${CMAKE_PROJECT_VERSION}-${TXVC_GIT_REVISION})
+
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/.git/index)
+
+
+
 
 option(TXVC_ENABLE_GPROF "Enable gprof intstrumentation for executables" OFF)
 
