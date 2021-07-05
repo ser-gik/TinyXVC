@@ -10,21 +10,22 @@ jobs:
       - run: mkdir build
       - run:
           working_directory: build
-          command: cmake ../
+          command: |
+                cmake ../;
+                make UnitTest;
+                make package;
       - run:
           working_directory: build
-          command: make UnitTest
+          command: |
+                sudo dpkg -i `cat deb-package-name`;
+                txvc -h;
       - run:
           working_directory: build
-          command: make package
-      - run:
-          working_directory: build
-          command: sudo dpkg -i `cat deb-package-name`
-      - run:
-          working_directory: build
-          command: txvc -h
+          command: |
+                mkdir deb;
+                cp `cat deb-package-name` deb/;
       - store_artifacts:
-          path: build/`cat deb-package-name`
+          path: build/deb
 
 workflows:
  version: 2
