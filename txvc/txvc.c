@@ -121,7 +121,7 @@ static bool driver_usage(const struct txvc_driver *d, const void *extra) {
     return true;
 }
 
-static bool printHelp(const char *progname, const struct config *config) {
+static bool print_help(const char *progname, const struct config *config) {
     bool didPrint = false;
     if (config->help) {
 #define AS_SYNOPSYS_ENTRY_FLAG(optChar, name, description)                                         \
@@ -240,11 +240,11 @@ int main(int argc, char**argv) {
 
     struct config config = { 0 };
     if (!load_config(argc, argv, &config)) {
-        printHelp(argv[0], &(struct config) { .help = true, });
+        print_help(argv[0], &(struct config) { .help = true, });
         return EXIT_FAILURE;
     }
 
-    if (printHelp(argv[0], &config)) {
+    if (print_help(argv[0], &config)) {
         return EXIT_SUCCESS;
     }
 
