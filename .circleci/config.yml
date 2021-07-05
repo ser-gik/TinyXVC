@@ -6,19 +6,23 @@ jobs:
     steps:
       - checkout
       - run: sudo apt update
-      - run:
-          command: sudo apt install build-essential cmake libftdi1-dev
-      - run:
-          command: mkdir build
+      - run: sudo apt install build-essential cmake libftdi1-dev
+      - run: mkdir build
       - run:
           working_directory: build
           command: cmake ../
       - run:
           working_directory: build
-          command: make all
+          command: make UnitTest
       - run:
           working_directory: build
-          command: make UnitTest
+          command: make package
+      - run:
+          working_directory: build
+          command: sudo dpkg -i `cat deb-package-name`
+      - run:
+          working_directory: build
+          command: txvc -h
 
 workflows:
  version: 2
