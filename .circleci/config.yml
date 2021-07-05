@@ -3,26 +3,29 @@ jobs:
   build-and-test:
     docker:
       - image: cimg/base:2021.05
-    working_directory: build
     steps:
       - checkout
       - run: sudo apt update
       - run: sudo apt install build-essential cmake libftdi1-dev
+      - run: mkdir build
       - run:
+          working_directory: build
           command: |
                 cmake ../;
                 make UnitTest;
                 make package;
       - run:
+          working_directory: build
           command: |
                 sudo dpkg -i `cat deb-package-name`;
                 txvc -h;
       - run:
+          working_directory: build
           command: |
                 mkdir deb;
                 cp `cat deb-package-name` deb/;
       - store_artifacts:
-          path: deb
+          path: build/deb
 
 workflows:
  version: 2
