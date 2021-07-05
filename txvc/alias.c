@@ -51,6 +51,6 @@ const struct txvc_profile_alias *txvc_find_alias_by_name(const char* name) {
 
 void txvc_print_all_aliases(void) {
     for (size_t i = 0; i < sizeof(gAliases) / sizeof(gAliases[i]); i++) {
-        printf("%s - %s\n", gAliases[i].name, gAliases[i].profile.description);
+        printf("%20s - %s\n", gAliases[i].name, gAliases[i].profile.description);
     }
 }

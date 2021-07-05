@@ -52,20 +52,21 @@ TXVC_DEFAULT_LOG_TAG(txvc);
 
 #define CLI_OPTION_LIST_ITEMS(OPT_FLAG, OPT)                                                       \
     OPT_FLAG("h", help, "Print this message.")                                                     \
-    OPT("p", profile, "Server HW profile or profile alias."                                        \
-            " HW profile is a specification that defines a backend to be used by server"           \
-            " and its parameters. Backend here means a particular device that eventually"          \
-            " receives and answers to XVC commands. HW profile is specified in the following"      \
+    OPT("p", profile, "Hardware profile or profile alias."                                         \
+            " HW profile is a specification that defines a \"backend\" to be used to communicate"  \
+            " with FPGA and its parameters. HW profile is specified in the following"              \
             " form:\n\n\t<driver_name>:<arg0>=<val0>,<arg1>=<val1>,<arg2>=<val2>,...\n\n"          \
-            "Available driver names as well as their specific parameters are listed below."        \
+            "Use '-D' to see available driver names as well as their specific parameters."         \
             " Also there are a few predefined profile aliases for specific HW that can be used"    \
-            " instead of fully specified description, see below.",                                 \
-            "profile_string_or_alias", const char *, optarg, NULL)                                 \
+            " instead of fully specified descriptions, use '-A' to see available aliases.",        \
+            "profile_spec_or_alias", const char *, optarg, NULL)                                   \
     OPT("a", serverAddr, "IPv4 address and port to listen for incoming"                            \
                          " XVC connections at (default: " DEFAULT_SERVER_ADDR ").",                \
             "ipv4_address:port", const char *, optarg, DEFAULT_SERVER_ADDR)                        \
     OPT("t", tckPeriodNanos, "Enforced TCK period, expressed in nanoseconds.",                     \
             "tck_period_ns", int, parse_int(optarg), 0)                                            \
+    OPT_FLAG("D", helpDrivers, "Print available drivers.")                                         \
+    OPT_FLAG("A", helpAliases, "Print available aliases.")                                         \
 
 #define ENV_LIST_ITEMS(ENV_FLAG, ENV)                                                              \
     ENV_FLAG("TXVC_LOG_VERBOSE", verbose, "Enable verbose logging")                                \
@@ -119,46 +120,56 @@ static bool driver_usage(const struct txvc_driver *d, const void *extra) {
     return true;
 }
 
-static void printUsage(const char *progname, bool detailed) {
+static bool printHelp(const char *progname, const struct config *config) {
+    bool didPrint = false;
+    if (config->help) {
 #define AS_SYNOPSYS_ENTRY_FLAG(optChar, name, description)                                         \
-    "[-" optChar "]"
+        "[-" optChar "]"
 #define AS_SYNOPSYS_ENTRY(optChar, name, description, optArg, type, initializer, defVal)           \
-    "[-" optChar " <" optArg ">]"
-    const char *synopsysOptions = CLI_OPTION_LIST_ITEMS(AS_SYNOPSYS_ENTRY_FLAG, AS_SYNOPSYS_ENTRY);
+        "[-" optChar " <" optArg ">]"
+        const char *optionsSynopsys =
+            CLI_OPTION_LIST_ITEMS(AS_SYNOPSYS_ENTRY_FLAG, AS_SYNOPSYS_ENTRY);
 #undef AS_SYNOPSYS_ENTRY_FLAG
 #undef AS_SYNOPSYS_ENTRY
 #define AS_USAGE_ENTRY_FLAG(optChar, name, description)                                            \
-    " -" optChar " : " description "\n"
+        " -" optChar " : " description "\n"
 #define AS_USAGE_ENTRY(optChar, name, description, optArg, type, initializer, defVal)              \
-    " -" optChar " : " description "\n"
-    const char *usageOptions = CLI_OPTION_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
+        " -" optChar " : " description "\n"
+        const char *optionsUsage = CLI_OPTION_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
 #undef AS_USAGE_ENTRY_FLAG
 #undef AS_USAGE_ENTRY
 
-    if (detailed) {
-        printf("TinyXVC - %s, v%s\n\n", TXVC_DESCRIPTION, TXVC_VERSION);
-    }
-    printf("Usage:\n"
-           "\t%s %s\n"
-           "\n%s\n",
-           progname, synopsysOptions, usageOptions);
-    if (detailed) {
-        printf("Drivers:\n");
-        txvc_enumerate_drivers(driver_usage, NULL);
-        printf("\n");
-        printf("Aliases:\n");
-        txvc_print_all_aliases();
-        printf("\n");
+        printf("%s - %s, v%s\n\n"
+               "Usage:\n"
+               "\t%s %s\n"
+               "\n%s\n",
+               TXVC_PROJECT_NAME, TXVC_DESCRIPTION, TXVC_VERSION,
+               progname, optionsSynopsys,
+               optionsUsage);
 
 #define AS_USAGE_ENTRY_FLAG(envName, name, description)                                            \
-        envName " - " description " (non-zero to enable)\n"
+        envName " - " description " (non-zero to activate)\n"
 #define AS_USAGE_ENTRY(envName, name, description, type, initializer, defVal)                      \
         envName " - " description "\n"
         const char *usageEnvVars = ENV_LIST_ITEMS(AS_USAGE_ENTRY_FLAG, AS_USAGE_ENTRY);
 #undef AS_USAGE_ENTRY_FLAG
 #undef AS_USAGE_ENTRY
-        printf("Environment variables (optional):\n%s\n", usageEnvVars);
+        printf("Environment variables:\n%s\n", usageEnvVars);
+        didPrint = true;
     }
+    if (config->helpDrivers) {
+        printf("Drivers:\n");
+        txvc_enumerate_drivers(driver_usage, NULL);
+        printf("\n");
+        didPrint = true;
+    }
+    if (config->helpAliases) {
+        printf("Aliases:\n");
+        txvc_print_all_aliases();
+        printf("\n");
+        didPrint = true;
+    }
+    return didPrint;
 }
 
 static int parse_int(const char* s) {
@@ -228,15 +239,15 @@ int main(int argc, char**argv) {
 
     struct config config = { 0 };
     if (!load_config(argc, argv, &config)) {
-        printUsage(argv[0], false);
+        printHelp(argv[0], &(struct config) { .help = true, });
         return EXIT_FAILURE;
     }
 
-    txvc_log_configure(config.logTagSpec, config.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
-    if (config.help) {
-        printUsage(argv[0], true);
+    if (printHelp(argv[0], &config)) {
         return EXIT_SUCCESS;
     }
+
+    txvc_log_configure(config.logTagSpec, config.verbose ? LOG_LEVEL_VERBOSE : LOG_LEVEL_INFO);
     if (!config.profile) {
         fprintf(stderr, "Profile is missing\n");
         return EXIT_FAILURE;
