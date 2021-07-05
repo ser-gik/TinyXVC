@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-if command -v udevadm &> /dev/null
+if command -v udevadm > /dev/null 2>&1
 then
     echo Applying txvc udev rules ...
     udevadm control --reload
