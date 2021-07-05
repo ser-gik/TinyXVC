@@ -1,6 +1,5 @@
 #!/usr/bin/env sh
 
-echo I\'m postinst
-echo My Args Are: "$@"
-whoami
+echo Applying txvc udev rules ...
+udevadm control --reload
 

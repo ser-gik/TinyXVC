@@ -1,0 +1,6 @@
+
+install(FILES
+    99-txvc.rules
+    DESTINATION /etc/udev/rules.d/
+    PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+

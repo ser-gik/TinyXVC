@@ -77,6 +77,7 @@ add_subdirectory(txvc)
 add_subdirectory(libtinytest)
 add_subdirectory(tests)
 add_subdirectory(player)
+add_subdirectory(udev)
 
 add_subdirectory(package)
 
