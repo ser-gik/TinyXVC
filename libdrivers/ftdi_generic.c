@@ -661,8 +661,12 @@ static bool activate(int numArgs, const char **argNames, const char **argValues)
     }
     INFO("Using device \"%s\" (serial number: \"%s\")\n",
             selectedDevice->Description, selectedDevice->SerialNumber);
-    REQUIRE_D2XX_SUCCESS_(FT_OpenEx(selectedDevice->SerialNumber, FT_OPEN_BY_SERIAL_NUMBER,
-                &d->ftHandle), bail_cant_open);
+    if (numConnectedDevices == 1) {
+        REQUIRE_D2XX_SUCCESS_(FT_Open(0, &d->ftHandle), bail_cant_open);
+    } else {
+        REQUIRE_D2XX_SUCCESS_(FT_OpenEx(selectedDevice->SerialNumber, FT_OPEN_BY_SERIAL_NUMBER,
+                    &d->ftHandle), bail_cant_open);
+    }
     REQUIRE_D2XX_SUCCESS_(FT_Purge(d->ftHandle, FT_PURGE_RX | FT_PURGE_TX),  bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetChars(d->ftHandle, 0, 0, 0, 0), bail_usb_close);
     REQUIRE_D2XX_SUCCESS_(FT_SetFlowControl(d->ftHandle, FT_FLOW_RTS_CTS, 0, 0), bail_usb_close);
