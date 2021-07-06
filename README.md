@@ -74,7 +74,7 @@ Build process was tested on Ubuntu 20.04 but should work on other distros as wel
 
 Install tools and dependencies:
 ```
-$ sudo apt install build-essential cmake libftdi1-dev
+$ sudo apt install build-essential cmake
 ```
 Once sources are checked out, build with next:
 ```

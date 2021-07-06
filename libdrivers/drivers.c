@@ -30,12 +30,10 @@
 #include <stddef.h>
 
 extern const struct txvc_driver driver_echo;
-extern const struct txvc_driver driver_ft2232h;
 extern const struct txvc_driver driver_ftdi_generic;
 
 static const struct txvc_driver * const gDrivers[] = {
     &driver_echo,
-    &driver_ft2232h,
     &driver_ftdi_generic,
 };
 static const size_t gNumDrivers = sizeof(gDrivers) / sizeof(gDrivers[0]);

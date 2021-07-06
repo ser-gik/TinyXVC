@@ -23,9 +23,6 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(LibFTDI1 NO_MODULE REQUIRED)
-include(${LIBFTDI_USE_FILE})
-
 add_subdirectory(d2xx)
 add_subdirectory(libtxvc)
 add_subdirectory(libdrivers)

@@ -6,7 +6,7 @@ jobs:
     steps:
       - checkout
       - run: sudo apt update
-      - run: sudo apt install build-essential cmake libftdi1-dev
+      - run: sudo apt install build-essential cmake
       - run: mkdir build
       - run:
           working_directory: build
