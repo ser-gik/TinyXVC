@@ -4,7 +4,7 @@
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if (TXVC_ARCH STREQUAL "amd64")
-        set(D2XX_URL "https://www.ftdichip.com/Drivers/D2XX/Linux/libftd2xx-x86_64-1.4.24.gz")
+        set(D2XX_URL "https://ftdichip.com/wp-content/uploads/2022/07/libftd2xx-x86_64-1.4.27.tgz")
         set(D2XX_DIR ${CMAKE_CURRENT_BINARY_DIR})
         set(D2XX_ARCHIVE ${D2XX_DIR}/libftd2xx.tar.gz)
 
