@@ -3,7 +3,7 @@ version: 2.1
 jobs:
   build-and-test:
     docker:
-      - image: ghcr.io/cimg/cpp:2024.05  # Pre-packaged with GCC, CMake, Ninja, and Make
+      - image: cimg/base:2024.01
     steps:
       - checkout
       - run:
