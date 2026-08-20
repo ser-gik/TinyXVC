@@ -10,8 +10,23 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", TAG+="uacce
 # Numato Lab boards
 #
 
-# Mimas Artix 7 FPGA Module
-SUBSYSTEM=="usb", ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", TAG+="uaccess", GROUP="plugdev"
+# Mimas Artix 7 FPGA Development Board
+#
+# This boards features FT2232H with channel B connected to FPGA JTAG pins and channel A connected
+# to GPIO pins. Let ftdi_sio bind its channel A so if FPGA design features UART - it could be
+# connected to channel A TX/RX pins and easily accessed on the host PC via relevant /dev/ttyUSBxx.
+# Also ensure channel B has no driver, so later txvc could use it via D2XX.
+# It is not possible to tell ftdi_sio to bind only one channel, so we bind whole device and then
+# unbind channel B.
+ACTION=="add", SUBSYSTEM=="usb", \
+    ATTR{idVendor}=="2a19", ATTR{idProduct}=="1009", ATTR{bInterfaceNumber}=="", \
+    RUN+="/bin/sh -c 'echo 2a19 1009 > /sys/bus/usb-serial/drivers/ftdi_sio/new_id'"
+ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="ftdi_sio", \
+    ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", ATTR{bInterfaceNumber}=="01", \
+	RUN+="/bin/sh -c 'echo $kernel > /sys/bus/usb/drivers/ftdi_sio/unbind'"
+ACTION=="add|bind", SUBSYSTEM=="usb", \
+    ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", TAG+="uaccess", GROUP="plugdev"
+
 # Mimas A7 Mini FPGA Development Board
 SUBSYSTEM=="usb", ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="100E", TAG+="uaccess", GROUP="plugdev"
 # Narvi Spartan 7 FPGA Module
