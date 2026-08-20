@@ -1,35 +1,35 @@
 version: 2.1
+
 jobs:
   build-and-test:
     docker:
-      - image: cimg/base:2021.05
+      - image: cimg/cpp:2024.05  # Pre-packaged with GCC, CMake, Ninja, and Make
     steps:
       - checkout
-      - run: sudo apt update
-      - run: sudo apt install build-essential cmake
-      - run: mkdir build
       - run:
+          name: Build and package
           working_directory: build
           command: |
-                cmake ../;
-                make UnitTest;
-                make package;
+            cmake -G Ninja ../
+            ninja UnitTest
+            ninja package
       - run:
+          name: Install and verify DEB package
           working_directory: build
           command: |
-                sudo dpkg -i `cat deb-package-name`;
-                txvc -h;
+            sudo dpkg -i $(cat deb-package-name)
+            txvc -h
       - run:
+          name: Prepare artifacts
           working_directory: build
           command: |
-                mkdir deb;
-                cp `cat deb-package-name` deb/;
+            mkdir -p deb
+            cp $(cat deb-package-name) deb/
       - store_artifacts:
           path: build/deb
 
 workflows:
- version: 2
- regular:
-   jobs:
-     - build-and-test
-
+  version: 2
+  regular:
+    jobs:
+      - build-and-test
