@@ -10,9 +10,9 @@ jobs:
           name: Build and package
           working_directory: build
           command: |
-            cmake -G Ninja ../
-            ninja UnitTest
-            ninja package
+            cmake ../
+            make UnitTest
+            make package
       - run:
           name: Install and verify DEB package
           working_directory: build
