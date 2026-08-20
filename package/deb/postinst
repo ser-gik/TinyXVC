@@ -4,6 +4,7 @@ if command -v udevadm > /dev/null 2>&1
 then
     echo Applying txvc udev rules ...
     udevadm control --reload
+    udevadm trigger
 else
     echo Udev rules were not applied. Install udevadm and reload rules manually.
 fi

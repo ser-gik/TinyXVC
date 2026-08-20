@@ -19,11 +19,11 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", TAG+="uacce
 # It is not possible to tell ftdi_sio to bind only one channel, so we bind whole device and then
 # unbind channel B.
 ACTION=="add", SUBSYSTEM=="usb", \
-    ATTR{idVendor}=="2a19", ATTR{idProduct}=="1009", ATTR{bInterfaceNumber}=="", \
+    ATTR{idVendor}=="2a19", ATTR{idProduct}=="1009", \
     RUN+="/bin/sh -c 'echo 2a19 1009 > /sys/bus/usb-serial/drivers/ftdi_sio/new_id'"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="ftdi_sio", \
     ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", ATTR{bInterfaceNumber}=="01", \
-	RUN+="/bin/sh -c 'echo $kernel > /sys/bus/usb/drivers/ftdi_sio/unbind'"
+    RUN+="/bin/sh -c 'echo $kernel > /sys/bus/usb/drivers/ftdi_sio/unbind'"
 ACTION=="add|bind", SUBSYSTEM=="usb", \
     ATTRS{idVendor}=="2a19", ATTRS{idProduct}=="1009", TAG+="uaccess", GROUP="plugdev"
 
