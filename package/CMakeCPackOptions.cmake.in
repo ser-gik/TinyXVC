@@ -1,4 +1,3 @@
-
 set(CPACK_PACKAGE_NAME "txvc")
 set(CPACK_PACKAGE_VERSION @TXVC_VERSION@)
 set(CPACK_PACKAGE_CONTACT "Sergey Guralnik <2010serhio@gmail.com>")

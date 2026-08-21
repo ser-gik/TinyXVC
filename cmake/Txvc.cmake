@@ -1,4 +1,3 @@
-
 #
 # Utilities to abstract of toolchain' and platform' specifics
 #

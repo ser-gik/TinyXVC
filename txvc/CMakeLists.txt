@@ -1,4 +1,3 @@
-
 add_txvc_executable(TxvcExe
     OUTPUT_NAME txvc
     SRCS
