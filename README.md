@@ -1,4 +1,3 @@
-
 # TinyXVC - minimalistic XVC (Xilinx Virtual Cable) server for Linux
 
 [![CircleCI](https://circleci.com/gh/ser-gik/TinyXVC/tree/main.svg?style=shield)](https://circleci.com/gh/ser-gik/TinyXVC/tree/main)

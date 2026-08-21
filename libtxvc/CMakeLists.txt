@@ -1,4 +1,3 @@
-
 add_txvc_library(Txvc
     SRCS
         bit_vector.c

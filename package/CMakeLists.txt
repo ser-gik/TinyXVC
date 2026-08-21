@@ -1,4 +1,3 @@
-
 configure_file(CMakeCPackOptions.cmake.in CMakeCPackOptions.cmake @ONLY)
 set(CPACK_PROJECT_CONFIG_FILE ${CMAKE_CURRENT_BINARY_DIR}/CMakeCPackOptions.cmake)
 

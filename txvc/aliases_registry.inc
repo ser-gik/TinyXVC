@@ -1,4 +1,3 @@
-
 /* Generic */
 PROFILE_ALIAS("ft232h", "FT232H-based USB to JTAG cable",
                         "ftdi-generic:"
